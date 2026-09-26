@@ -1,0 +1,23 @@
+{
+  "name": "Morph cube",
+  "model": "AnimatedMorphCube.glb",
+  "environment": "lighting.hdr",
+  "camera": {
+    "position": [
+      3,
+      2.5,
+      4
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "fov": 40,
+    "near": 0.05,
+    "far": 100
+  },
+  "exposure": 0.4,
+  "environmentIntensity": 1.0,
+  "background": "#203040"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "Fox (skinned)",
+  "model": "Fox.glb",
+  "environment": "lighting.hdr",
+  "camera": {
+    "position": [
+      140,
+      70,
+      180
+    ],
+    "target": [
+      0,
+      45,
+      0
+    ],
+    "fov": 40,
+    "near": 1,
+    "far": 2000
+  },
+  "exposure": 0.4,
+  "environmentIntensity": 1.0,
+  "background": "#203040"
+}

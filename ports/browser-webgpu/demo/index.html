@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#171719">
+  <title>NR on WebGPU</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="demo.css">
+  <script defer src="dist/loading-state.js"></script>
+  <script defer crossorigin="anonymous" src="https://releases.ijewel3d.com/libs/webgi-v0/bundle-0.22.1.js"></script>
+  <script defer src="dist/viewer.js"></script>
+</head>
+<body>
+  <main id="canvasContainer" aria-busy="true">
+    <canvas id="mcanvas" aria-label="Interactive scene viewer"></canvas>
+    <canvas id="dlssWebGpuOutput" aria-label="DLSS result"></canvas>
+    <canvas id="dlssResizeHold" aria-hidden="true"></canvas>
+  </main>
+  <header id="info">
+    <div class="title-wrapper"><strong class="brand">DLSS 5 WebGPU</strong><h1>DLSS / Neural rendering</h1></div>
+    <small>The neural rendering network from this repository's Vulkan implementation, ported to WebGPU: bit-exact, every block boundary and the composed image.<br>
+      WebGI viewer · WebGPU runtime · <a href="../web/parity.html">parity</a> · <a href="../web/selftest.html">self-test</a><br>
+      <span id="sceneAttribution"></span>
+    </small>
+  </header>
+  <section id="demoLoading" data-state="loading" aria-label="Demo loading">
+    <div class="loading-card">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <div role="status" aria-live="polite"><h2 id="loadingTitle">Loading viewer</h2><p id="loadingDetail">Downloading the demo and preparing your scene</p></div>
+      <progress id="loadingProgress" max="1" aria-label="Download progress"></progress>
+      <p id="loadingTransfer"></p>
+      <button id="loadingRetry" type="button" hidden>Retry</button>
+    </div>
+  </section>
+  <button id="dlssPresentedIndicator" type="button" data-state="off" aria-live="polite" aria-pressed="false" aria-label="DLSS 5 is not applied to the presented frame">
+    <span class="dlss-indicator-dot" aria-hidden="true"></span>
+    <strong>DLSS 5 OFF</strong>
+  </button>
+  <footer id="demoHint">Drag to orbit · Scroll to zoom · <kbd>R</kbd> render · <kbd>L</kbd> live · <kbd>F6</kbd> compare</footer>
+  <output id="dlssWebGpuStatus" role="status">Loading scene</output>
+  <noscript>This interactive demo requires JavaScript.</noscript>
+  <script defer type="module" src="dist/runtime.js"></script>
+</body>
+</html>

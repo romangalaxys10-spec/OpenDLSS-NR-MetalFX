@@ -1,0 +1,10 @@
+build/
+tools/
+dist/
+*.metallib
+*.air
+models/
+*.spv
+.DS_Store
+node_modules/
+third_party/filament*

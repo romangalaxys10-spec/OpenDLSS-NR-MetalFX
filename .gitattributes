@@ -1,0 +1,5 @@
+# One line ending in the repository. Windows tools all read LF; the mix was accidental.
+* text=auto eol=lf
+
+# the Filament patch is applied byte for byte to an LF checkout: no line-ending conversion
+*.patch -text

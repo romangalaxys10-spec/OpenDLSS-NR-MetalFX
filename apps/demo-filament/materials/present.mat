@@ -1,0 +1,21 @@
+// The present view's fullscreen quad: the NR output (rgba8, display-ready) as is, no lighting, no post-processing.
+material {
+    name : present,
+    shadingModel : unlit,
+    vertexDomain : device,
+    culling : none,
+    depthWrite : false,
+    depthCulling : false,
+    blending : opaque,
+    requires : [ uv0 ],
+    parameters : [
+        { type : sampler2d, name : image, precision : medium }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = vec4(texture(materialParams_image, getUV0()).rgb, 1.0);
+    }
+}

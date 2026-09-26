@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NR parity</title>
+<style>
+  :root { color-scheme: dark; --bg: #11131a; --fg: #d8dce6; --dim: #7c8496; --ok: #6ee7a0; --bad: #ff7b72; }
+  body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+         font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  main { max-width: 74rem; margin: 0 auto; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .25rem; }
+  p.lead { color: var(--dim); margin: 0 0 1.25rem; max-width: 52rem; }
+  .split { display: flex; gap: 2rem; align-items: flex-start; flex-wrap: wrap; }
+  .panel { flex: 1 1 32rem; min-width: 22rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .2rem .6rem .2rem 0; white-space: nowrap; }
+  th { color: var(--dim); font-weight: 400; border-bottom: 1px solid #262b38; position: sticky; top: 0;
+       background: var(--bg); }
+  td.n { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  #rows-wrap { max-height: 60vh; overflow: auto; }
+  canvas { image-rendering: pixelated; max-width: 100%; border: 1px solid #262b38; background: #000; }
+  #status { color: var(--dim); margin: 1rem 0 0; }
+  #verdict { margin: 1rem 0 0; font-size: 1rem; }
+  code { color: #9ecbff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NR parity</h1>
+  <p class="lead">
+    The port run on a recorded frame, compared byte for byte against what native produced from the same
+    input. This is the browser twin of <code>dlss5vk parity</code>: same fixtures, same contract, same
+    standard &mdash; every E4M3 byte identical, not close. A fixture declares its checks and the page runs
+    exactly those or refuses the fixture: <code>nr512</code> gates the block boundaries (and its 8-bit image,
+    within one code), <code>nr768</code> the head and the composed image. <code>tools/check.mjs</code> runs
+    both.
+  </p>
+  <div class="split">
+    <div class="panel">
+      <div id="rows-wrap">
+        <table>
+          <thead><tr><th>boundary</th><th>shape</th><th>result</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p id="status">starting</p>
+      <p id="verdict"></p>
+    </div>
+    <div class="panel">
+      <canvas id="image" width="16" height="16"></canvas>
+      <p class="dim">the network's output for this frame: the display proxy plus a quarter of the head's
+        residual, with no temporal history to blend. The last row above compares it against the image
+        native produced from the same input.</p>
+    </div>
+  </div>
+</main>
+<script type="module">
+import { Network } from '../src/network.js';
+import { loadFixture, runParity, composeImage } from '../src/parity.js';
+
+const rows = document.getElementById('rows');
+const status = document.getElementById('status');
+const verdict = document.getElementById('verdict');
+const canvas = document.getElementById('image');
+const lines = [];
+const query = new URLSearchParams(location.search);
+const reporting = query.has('report');
+
+const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text;
+                              if (cls) td.className = cls; return td; };
+
+const show = (value) => (Number.isInteger(value) && value >= 0 && value < 256
+                         ? `0x${value.toString(16).padStart(2, '0')}` : String(value));
+
+function describe(result) {
+  if (typeof result === 'string') return [result, 'bad'];
+  if (result.verdict === 'bit-exact') return [`bit-exact (${result.count})`, 'ok'];
+  if (result.verdict === 'within-tolerance') {
+    return [`within one code (${result.count - result.tolerated} exact, ${result.tolerated} one code off)`, 'ok'];
+  }
+  if (result.verdict === 'signed-zero') {
+    return [`NOT BIT-EXACT: ${result.signedZeros} of ${result.count} differ only in the sign of zero`, 'bad'];
+  }
+  const deltas = result.deltas.map(([d, n]) => `${d > 0 ? '+' : ''}${d}:${n}`).join(' ');
+  return [`MISMATCH ${result.mismatches}/${result.count} (${(100 * result.mismatches / result.count).toFixed(3)}%) ` +
+          `max|d| ${result.maxAbs.toPrecision(3)} rmse ${result.rmse.toPrecision(3)} ` +
+          `first@${result.first.index} got ${show(result.first.actual)} exp ${show(result.first.expected)}` +
+          (deltas ? ` [${deltas}]` : ''), 'bad'];
+}
+
+const report = {
+  status: (text) => { status.textContent = text; },
+  timing: (ms, dispatches) => {
+    const text = `${dispatches} dispatches in ${ms.toFixed(0)} ms (best)`;
+    lines.push(text);
+    status.textContent = text;
+  },
+  note: (text) => {
+    lines.push(text);
+    const p = document.createElement('p');
+    p.className = 'dim';
+    p.textContent = text;
+    verdict.before(p);
+  },
+  row: (name, result, shape) => {
+    const [text, cls] = describe(result);
+    lines.push(`  ${name.padEnd(16)} ${shape.padEnd(16)} ${text}`);
+    const tr = document.createElement('tr');
+    tr.appendChild(cell(name));
+    tr.appendChild(cell(shape, 'dim'));
+    tr.appendChild(cell(text, cls));
+    rows.appendChild(tr);
+    tr.scrollIntoView({ block: 'nearest' });
+  },
+  done: (summary) => {
+    const ran = summary['bit-exact'] + summary['within-tolerance'] + summary.failed;
+    const pass = summary.failed === 0 && ran > 0;
+    const text = `PARITY ${pass ? 'PASS' : 'FAIL'}: ${summary['bit-exact']} bit-exact, ` +
+                 `${summary['within-tolerance']} within tolerance, ${summary.failed} failed`;
+    verdict.textContent = text;
+    verdict.className = pass ? 'ok' : 'bad';
+    finish(text);
+  },
+};
+
+function finish(text) {
+  console.log(text);
+  lines.push(text);
+  if (!reporting) return;
+  fetch('/report', { method: 'POST', body: lines.join('\n') }).finally(() => window.close());
+}
+
+try {
+  const fixture = await loadFixture(query.get('fixture') ?? '/fixtures/nr512');
+  const [width, height] = fixture.manifest.sourceDimensions;
+  const network = await Network.create({
+    weights: query.get('weights') ?? '/weights',
+    width, height, captureBoundaries: true,
+    onProgress: (text) => { status.textContent = text; lines.push(text); },
+  });
+  await runParity(network, fixture, report,
+                  { repeat: Number(query.get('repeat') ?? 1), profile: query.has('profile') });
+
+  {
+    const image = composeImage(await network.readHead(), fixture, network.geometry);
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.getContext('2d').putImageData(image, 0, 0);
+  }
+} catch (error) {
+  status.textContent = '';
+  verdict.textContent = String(error);
+  verdict.className = 'bad';
+  console.error('PARITY ERROR', error);
+  finish(`PARITY ERROR ${error && error.stack ? error.stack : error}`);
+}
+</script>
+</body>
+</html>

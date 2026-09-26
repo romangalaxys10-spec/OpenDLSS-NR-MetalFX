@@ -1,0 +1,28 @@
+#version 460
+// The renderer's velocity buffer (rgba32ui: object id, depth bits, motion x/y bits with motion = previous NDC - current
+// NDC, y up) -> the NR's motion texture (rgba16f: xy = current -> previous in uv units of the render target, y down as
+// texture rows are; z = 1 where the previous position is on screen, so the previous frame holds a history for the
+// pixel, and 0 where it is off screen and there is none).
+// Where nothing was drawn, and where the depth is that of infinity (the skybox is drawn there with a zero motion
+// vector), the motion is the camera's reprojection of a point at infinity: `background` = previous clip <- current
+// clip through the two views' rotations.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform usampler2D velocity;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D motion;
+layout(push_constant) uniform Push { mat4 background; uint width; uint height; } push;
+
+void main() {
+    uvec2 id = gl_GlobalInvocationID.xy;
+    if (id.x >= push.width || id.y >= push.height) return;
+    uvec4 v = texelFetch(velocity, ivec2(id), 0);
+    // the current NDC of the pixel center (y up: row 0 is the top of the image)
+    vec2 ndc = vec2((float(id.x) + 0.5) / float(push.width) * 2.0 - 1.0, 1.0 - (float(id.y) + 0.5) / float(push.height) * 2.0);
+    bool drawn = v.x != 0u || v.y != 0u;   // the clear is zero; a drawn surface has an object id or a non-zero depth
+    vec2 m = vec2(uintBitsToFloat(v.z), uintBitsToFloat(v.w));
+    if (!drawn || uintBitsToFloat(v.y) == 0.0) {
+        vec4 clip = push.background * vec4(ndc, 0.5, 1.0);   // any depth: a rotation moves the whole ray alike
+        m = clip.xy / clip.w - ndc;
+    }
+    bool onScreen = all(lessThan(abs(ndc + m), vec2(1.0)));
+    imageStore(motion, ivec2(id), onScreen ? vec4(0.5 * vec2(m.x, -m.y), 1.0, 0.0) : vec4(0.0));
+}

@@ -1,0 +1,49 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+jobs:
+  macos-metal:
+    runs-on: macos-14          # Apple silicon: compiles the Metal/MetalFX backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+      - name: Build
+        run: cmake --build build -j 4
+      - name: Compile Metal shaders
+        run: |
+          xcrun -sdk macosx metal -c src/metal/shaders/*.metal -o build/opendlss.air
+          xcrun -sdk macosx metallib -o build/opendlss.metallib build/opendlss.air
+      - name: Tests (numeric/reference/geometry)
+        run: ./build/opendlss-tests
+      - name: CLI selftest
+        run: ./build/opendlss-cli selftest
+
+  windows-vulkan:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch tools (glslang, Vulkan-Headers, volk)
+        run: powershell -File scripts/windows/fetch_tools.ps1
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release -j 4
+      - name: Tests
+        run: ./build/Release/opendlss-tests.exe
+
+  linux-vulkan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch tools
+        run: bash scripts/common/fetch_tools.sh
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j 4
+      - name: Tests
+        run: ./build/opendlss-tests
+      - name: CLI selftest
+        run: ./build/opendlss-cli selftest

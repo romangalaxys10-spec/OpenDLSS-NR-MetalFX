@@ -1,0 +1,47 @@
+name: Release
+on:
+  push: { tags: ["v*"] }
+permissions: { contents: write }
+jobs:
+  artifacts:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-14, name: macos-arm64 }
+          - { os: windows-2022, name: windows-x64 }
+          - { os: ubuntu-24.04, name: linux-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'macOS'
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build -j 4
+          xcrun -sdk macosx metal -c src/metal/shaders/*.metal -o build/opendlss.air || true
+          xcrun -sdk macosx metallib -o build/opendlss.metallib build/opendlss.air || true
+      - if: runner.os == 'Windows'
+        run: |
+          powershell -File scripts/windows/fetch_tools.ps1
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j 4
+      - if: runner.os == 'Linux'
+        run: |
+          bash scripts/common/fetch_tools.sh
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j 4
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp -R build/opendlss-cli build/opendlss* build/demo-game-macos.app dist/ 2>/dev/null || true
+            cd dist && zip -qr ../opendlss-${{ matrix.name }}.zip . && cd .. && mv opendlss-${{ matrix.name }}.zip dist/
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/Release/opendlss.exe build/Release/dlss5vk.exe build/Release/opendlss-tests.exe dist/ 2>/dev/null || true
+            powershell -Command "Compress-Archive -Path dist\\* -DestinationPath opendlss-${{ matrix.name }}.zip -Force" && mv opendlss-${{ matrix.name }}.zip dist/
+          else
+            cp build/opendlss-cli build/dlss5vk build/opendlss-tests dist/ 2>/dev/null || true
+            cd dist && zip -qr ../opendlss-${{ matrix.name }}.zip . && cd .. && mv opendlss-${{ matrix.name }}.zip dist/
+          fi
+      - uses: softprops/action-gh-release@v2
+        with: { files: dist/opendlss-*.zip }

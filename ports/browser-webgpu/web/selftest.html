@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NR numerics self-test</title>
+<style>
+  :root { color-scheme: dark; --bg: #11131a; --fg: #d8dce6; --dim: #7c8496; --ok: #6ee7a0; --bad: #ff7b72; }
+  body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+         font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .25rem; }
+  p.lead { color: var(--dim); margin: 0 0 1.5rem; max-width: 46rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .3rem .6rem .3rem 0; vertical-align: top; }
+  th { color: var(--dim); font-weight: 400; border-bottom: 1px solid #262b38; }
+  td.n { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  #status { color: var(--dim); margin: 1rem 0 0; }
+  #verdict { margin: 1.5rem 0 0; font-size: 1rem; }
+  code { color: #9ecbff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NR numerics self-test</h1>
+  <p class="lead">
+    Every scalar function the network's arithmetic is made of, run through the JavaScript oracle
+    (<code>src/numerics.js</code>) and through the WGSL (<code>shaders/numerics.wgsl</code>), and compared
+    against <code>web/fixtures/numerics.bin</code> &mdash; what the Vulkan implementation in this repository
+    produced for the same inputs. Exhaustive over every half bit pattern where the domain allows it.
+  </p>
+  <table>
+    <thead><tr><th>case</th><th class="n">cases</th><th>JS vs reference</th><th>WGSL vs reference</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p id="status">starting</p>
+  <p id="verdict"></p>
+</main>
+<script type="module">
+import { runSelfTest } from '../src/selftest.js';
+
+const rows = document.getElementById('rows');
+const status = document.getElementById('status');
+const verdict = document.getElementById('verdict');
+
+const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text;
+                              if (cls) td.className = cls; return td; };
+
+function verdictText(result) {
+  if (!result) return ['(is the oracle)', 'dim'];
+  if (result.mismatches) {
+    return [`${result.mismatches} differ, first at ${result.first.i}: ` +
+            `0x${result.first.expected.toString(16)} vs 0x${result.first.actual.toString(16)}`, 'bad'];
+  }
+  const notes = [];
+  if (result.skipped) notes.push(`${result.skipped} non-finite skipped`);
+  if (result.nanPairs) notes.push(`${result.nanPairs} NaN pairs`);
+  return [notes.length ? `exact (${notes.join(', ')})` : 'exact', 'ok'];
+}
+
+const lines = [];
+
+const report = {
+  status: (text) => { status.textContent = text; },
+  device: (info) => {
+    const parts = [info.vendor, info.architecture, info.device, info.description].filter(Boolean);
+    const text = parts.length ? `device: ${parts.join(' / ')}` : 'device acquired';
+    lines.push(text);
+    status.textContent = text;
+  },
+  row: (entry, cpu, gpu) => {
+    lines.push(`  ${entry.name}: js ${verdictText(cpu)[0]} | wgsl ${verdictText(gpu)[0]}`);
+    const tr = document.createElement('tr');
+    tr.appendChild(cell(entry.name));
+    tr.appendChild(cell(entry.count.toLocaleString(), 'n'));
+    tr.appendChild(cell(...verdictText(cpu)));
+    tr.appendChild(cell(...verdictText(gpu)));
+    rows.appendChild(tr);
+  },
+  note: (text) => { lines.push(`  ${text}`);
+                    const p = document.createElement('p'); p.className = 'dim'; p.textContent = text;
+                    verdict.before(p); },
+  done: (failures) => {
+    status.textContent = '';
+    verdict.textContent = failures ? `${failures} case(s) disagree` : 'every case is exact';
+    verdict.className = failures ? 'bad' : 'ok';
+    finish(failures ? `SELFTEST FAIL: ${failures} case(s) disagree` : 'SELFTEST PASS');
+  },
+};
+
+// With ?report=1 the verdict goes back to serve.mjs and the tab closes itself, so the whole thing can be run
+// from a script. Without it the page just sits there and is read.
+const reporting = new URLSearchParams(location.search).has('report');
+function finish(text) {
+  console.log(text);
+  lines.push(text);
+  if (!reporting) return;
+  fetch('/report', { method: 'POST', body: lines.join('\n') }).finally(() => window.close());
+}
+
+runSelfTest(report).catch((error) => {
+  status.textContent = '';
+  verdict.textContent = String(error);
+  verdict.className = 'bad';
+  console.error('SELFTEST ERROR', error);
+  finish(`SELFTEST ERROR ${error && error.stack ? error.stack : error}`);
+});
+</script>
+</body>
+</html>
