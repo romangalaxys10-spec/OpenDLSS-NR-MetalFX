@@ -123,7 +123,7 @@ public:
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 
         // 1. MetalFX spatial scaler when available, else our Lanczos3 passes
-        id<MTLFXSpatialScaler> fx = spatialScaler(input.width, input.height, OW, OH);
+        MTLFXSpatialScaler* fx = spatialScaler(input.width, input.height, OW, OH);
         if (fx) {
             fx.colorTexture = src;
             fx.outputTexture = up;
@@ -155,7 +155,7 @@ public:
         // 2. sharpen
         if (sharpen > 0) {
             id<MTLTexture> fin = newTexture(OW, OH);
-            id<MTLBuffer> sbuf = floatBuf({sharpen});
+            GpuBuffer sbuf = floatBuf({sharpen});
             id<MTLComputePipelineState> ps = pipeline(lib_, pipes_, device_, "odl_sharpen");
             [enc setComputePipelineState:ps];
             [enc setTexture:up atIndex:0]; [enc setBuffer:sbuf.buf offset:0 atIndex:0];
@@ -244,7 +244,7 @@ public:
                     GpuBuffer pooled = makeBuffer(size_t(bw) * bh * p.channels * 2);
                     runPool(enc, state, liveW, liveH, bw, bh, p.channels, pooled);
                     runGemm(enc, pooled, tensorNamed("trans" + std::to_string(p.onField ? -1 : p.level) + ".up"),
-                            nullptr, bw*bh, C, p.channels, 0, state);
+                            GpuBuffer{}, bw*bh, C, p.channels, 0, state);
                     liveC = C;
                 } else if (effE < effP) {
                     // down-GEMM + upsample + skip
@@ -571,7 +571,7 @@ private:
         [enc setBytes:&v length:4 atIndex:idx];
     }
 
-    id<MTLFXSpatialScaler> spatialScaler(uint32_t iw, uint32_t ih, uint32_t ow, uint32_t oh) {
+    MTLFXSpatialScaler* spatialScaler(uint32_t iw, uint32_t ih, uint32_t ow, uint32_t oh) {
         if (!info_.metalFxSpatial) return nil;
         const std::string key = std::to_string(iw)+"x"+std::to_string(ih)+"->"+std::to_string(ow)+"x"+std::to_string(oh);
         auto it = spatialScalers_.find(key);
@@ -581,8 +581,7 @@ private:
             d.inputWidth = iw; d.inputHeight = ih; d.outputWidth = ow; d.outputHeight = oh;
             d.colorTextureFormat = MTLPixelFormatRGBA16Float;
             d.outputTextureFormat = MTLPixelFormatRGBA16Float;
-            d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModeSRGB;
-            id<MTLFXSpatialScaler> s = [d newSpatialScalerWithDevice:device_];
+            MTLFXSpatialScaler* s = [d newSpatialScalerWithDevice:device_];
             spatialScalers_[key] = s;
             return s;
         }
@@ -749,8 +748,8 @@ private:
     id<MTLCommandQueue> queue_ = nil;
     id<MTLLibrary> lib_ = nil;
     std::map<std::string, id<MTLComputePipelineState>> pipes_;
-    std::map<std::string, id<MTLFXSpatialScaler>> spatialScalers_;
-    id<MTLFXTemporalScaler> tScaler_ = nil;
+    std::map<std::string, MTLFXSpatialScaler*> spatialScalers_;
+    MTLFXTemporalScaler* tScaler_ = nil;
     std::unique_ptr<Model> model_;
     std::map<std::string, GpuBuffer> tensorBufs_;
     GpuBuffer projIn_, qkvBuf_;
