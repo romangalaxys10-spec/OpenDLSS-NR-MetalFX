@@ -30,10 +30,11 @@ jobs:
           ctest --test-dir build-core --output-on-failure
         env:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
-      - name: Build Metal backend (iterating on MetalFX API)
-        continue-on-error: true
+      - name: Build Metal backend
         run: cmake --build build -j 3
-      - name: Backend report
+      - name: Metal backend report
+        run: ./build/opendlss-nr info
+      - name: Core report
         run: ./build-core/opendlss-nr info
 
   linux-vulkan:
@@ -73,7 +74,7 @@ jobs:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
       - name: Backend report
         shell: pwsh
-        run: Invoke-Expression "& .\build\opendlss-nr.exe info"
+        run: Invoke-Expression "& .\build\Release\opendlss-nr.exe info"
 
   linux-asan:
     name: Linux AddressSanitizer
