@@ -1,0 +1,46 @@
+# build artifacts
+build/
+build-*/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.spv
+*.exp
+*.pdb
+*.ilk
+
+# model weights (generated)
+models/
+!models/.gitkeep
+
+# demo artifacts
+demos/output/
+!demos/output/.gitkeep
+
+# toolchains fetched by scripts
+tools/external/
+third_party/fetched/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.swiftpm/
+.build/

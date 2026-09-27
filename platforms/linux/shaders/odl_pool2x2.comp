@@ -1,0 +1,44 @@
+// odl_pool2x2.comp — encoder transition pooling: 2x2 box average computed in
+// half steps in the reference order ((a+b), (c+d), top+bot, *0.25), published
+// E4M3. Port of Graph.metal's odl_pool2x2.
+//
+// Push constants: [0..1] srcSize.xy [2..3] dstSize.xy [4] C
+// Bindings: 0 src [sw*sh][C], 4 pooled [dw*dh][C]
+//
+// Dispatch: 64-thread workgroups over dw*dh.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer Src { uint src[]; };
+layout(std430, set = 0, binding = 4) restrict writeonly buffer Pooled { uint pooled[]; };
+
+void main() {
+    const uvec2 srcSize = pcuv2(0);
+    const uvec2 dstSize = pcuv2(2);
+    const uint C = pcu(4);
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= dstSize.x * dstSize.y) return;
+    const uint x = gid % dstSize.x;
+    const uint y = gid / dstSize.x;
+
+    for (uint c = 0; c < C; ++c) {
+        // clamp to the source edge (min with srcSize-1, reference semantics)
+        uint x0 = min(x * 2u,       srcSize.x - 1u);
+        uint x1 = min(x * 2u + 1u,  srcSize.x - 1u);
+        uint y0 = min(y * 2u,       srcSize.y - 1u);
+        uint y1 = min(y * 2u + 1u,  srcSize.y - 1u);
+        float a  = ODL_LD(src, (y0 * srcSize.x + x0) * C + c);
+        float b  = ODL_LD(src, (y0 * srcSize.x + x1) * C + c);
+        float cc = ODL_LD(src, (y1 * srcSize.x + x0) * C + c);
+        float d  = ODL_LD(src, (y1 * srcSize.x + x1) * C + c);
+        float top = odl_f16_to_f32(odl_f32_to_f16(a + b));    // half steps
+        float bot = odl_f16_to_f32(odl_f32_to_f16(cc + d));   // reference order
+        float sum = odl_f16_to_f32(odl_f32_to_f16(top + bot));
+        pooled[gid * C + c] =
+            odl_f32_to_f16(odl_pub_e4m3(odl_f16_to_f32(odl_f32_to_f16(sum * 0.25))));
+    }
+}

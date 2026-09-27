@@ -1,0 +1,41 @@
+// odl_sharpen.comp — adaptive sharpen (CAS-style). Port of Media.metal's
+// odl_sharpen.
+//
+// Push constants: [0] amount (f32)
+// Bindings: 0 src RGBA32Float, 1 dst RGBA32Float
+//
+// Dispatch: 16x16 workgroups over the image.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D src;
+layout(rgba32f, set = 0, binding = 1) restrict writeonly uniform image2D dst;
+
+void main() {
+    const ivec2 sz = imageSize(src);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= sz.x || gid.y >= sz.y) return;
+
+    vec4 c = imageLoad(src, gid);
+    vec3 blur = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            ivec2 p = clamp(gid + ivec2(dx, dy), ivec2(0), sz - 1);
+            float w = (dx != 0 && dy != 0) ? 1.0 : 2.0;
+            blur += imageLoad(src, p).rgb * w;
+            wsum += w;
+        }
+    }
+    blur /= wsum;
+    float lo = min(min(c.r, c.g), c.b);
+    float hi = max(max(c.r, c.g), c.b);
+    float adapt = 1.0 - clamp((hi - lo) * 3.0, 0.0, 1.0);
+    imageStore(dst, gid,
+               vec4(clamp(c.rgb + (c.rgb - blur) * pcf(0) * adapt, 0.0, 1.0), 1.0));
+}

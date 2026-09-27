@@ -1,0 +1,36 @@
+// odl_head.comp — head: C -> 4 f16 GEMM into f32 (rgb residual + temporal
+// blend logit per token). Port of Graph.metal's odl_head.
+//
+// Push constants: [0] tokens [1] C [2] hasBias
+// Bindings: 0 state [tokens][C], 1 w [4][C], 2 b [4] (dummy when absent),
+//           5 head [tokens][4] f32
+//
+// Dispatch: 64-thread workgroups over tokens.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer State { uint state[]; };
+layout(std430, set = 0, binding = 1) restrict readonly buffer W { uint w[]; };
+layout(std430, set = 0, binding = 2) restrict readonly buffer B { uint b[]; };
+layout(std430, set = 0, binding = 5) restrict writeonly buffer Head {
+    float head[];   // [tokens][4] f32
+};
+
+void main() {
+    const uint tokens = pcu(0);
+    const uint C = pcu(1);
+    const bool hasBias = pcu(2) != 0u;
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= tokens) return;
+
+    for (uint o = 0; o < 4u; ++o) {
+        float s = hasBias ? ODL_LD(b, o) : 0.0;
+        for (uint i = 0; i < C; ++i)
+            s += ODL_LD(w, o * C + i) * ODL_LD(state, gid * C + i);
+        head[gid * 4u + o] = s;
+    }
+}

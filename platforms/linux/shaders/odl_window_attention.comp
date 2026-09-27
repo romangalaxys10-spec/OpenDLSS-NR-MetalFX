@@ -1,0 +1,134 @@
+// odl_window_attention.comp — window attention over one 8x8 window per
+// workgroup (64 threads). Port of Graph.metal's odl_window_attention with the
+// CPU reference's exact numerics:
+//   * cosine-normalized q/k, learned per-head q scale (single half-rounding
+//     of the normalized q before the f32 scale multiply, per neural_graph_cpu.cpp)
+//   * S = q·k + per-head 64x64 prior, softmax through the half bit-trick
+//     exponential, invD rounded to half, weights published E4M3
+//   * out-of-field window tokens are ZERO vectors whose prior still enters
+//     the softmax denominator (reference semantics — not an approximation)
+//   * every in-field token is covered by exactly one window, so headO is
+//     written exactly once per (token, head); out-of-field threads write
+//     nothing (the Metal port's trailing zeroing of token 0 was racy)
+//
+// Heads are processed sequentially with per-head q/k/v staging in shared
+// memory (3 x 8 KB), which fits every desktop device's shared-memory limit
+// regardless of head count.
+//
+// Push constants: [0..1] levelSize.xy [2] C [3] heads [4] phase [5] hasPrior
+// Bindings: 0 qkv [tokens][3C], 1 prior [heads][64][64], 2 qscale [heads],
+//           7 headO [tokens][C] (E4M3 published)
+//
+// Dispatch: gridX*gridY workgroups of 64 threads,
+//   gridX = ceil((levelW + shift)/8), gridY = ceil((levelH + shift)/8),
+//   shift = phase == 0 ? 0 : 4 (matches the host's own computation).
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer Qkv {
+    uint qkv[];      // [tokens][3C] half-as-uint32, published E4M3
+};
+layout(std430, set = 0, binding = 1) restrict readonly buffer Prior {
+    uint prior[];    // [heads][64][64] half-as-uint32 (dummy when absent)
+};
+layout(std430, set = 0, binding = 2) restrict readonly buffer Qscale {
+    uint qscale[];   // [heads] half-as-uint32
+};
+layout(std430, set = 0, binding = 7) restrict writeonly buffer HeadO {
+    uint headO[];    // [tokens][C] half-as-uint32, E4M3 published
+};
+
+#define ODL_WIN 8u
+#define ODL_HD  32u
+
+shared uint qE[64 * 32];   // this head's window q (E4M3, half-as-uint32)
+shared uint kE[64 * 32];
+shared uint vE[64 * 32];
+
+void main() {
+    const uvec2 levelSize = pcuv2(0);
+    const uint C     = pcu(2);
+    const uint heads = pcu(3);
+    const uint phase = pcu(4);
+    const bool hasPrior = pcu(5) != 0u;
+
+    const int offX[4] = int[4](0, -4, -4, 0);
+    const int offY[4] = int[4](0, -4, -4, 0);
+    const int shift = (phase == 0u) ? 0 : 4;
+    const uint gridX = (levelSize.x + uint(shift) + ODL_WIN - 1u) / ODL_WIN;
+    const uint gridY = (levelSize.y + uint(shift) + ODL_WIN - 1u) / ODL_WIN;
+    const uint wgx = gl_WorkGroupID.x % gridX;
+    const uint wgy = gl_WorkGroupID.x / gridX;
+
+    const uint ti = gl_LocalInvocationID.x;    // 0..63 within the window
+    const int tx = offX[phase] + int(wgx * ODL_WIN) + int(ti % ODL_WIN);
+    const int ty = offY[phase] + int(wgy * ODL_WIN) + int(ti / ODL_WIN);
+    const bool inside = tx >= 0 && ty >= 0 &&
+                        tx < int(levelSize.x) && ty < int(levelSize.y);
+    const uint token = inside ? uint(ty) * levelSize.x + uint(tx) : 0u;
+
+    for (uint h = 0; h < heads; ++h) {
+        // 1) cosine-normalize + scale q,k; quantize v (this thread's slot)
+        const uint dst = ti * ODL_HD;
+        if (inside) {
+            const uint qBase = token * 3u * C + h * ODL_HD;
+            const uint kBase = token * 3u * C + C + h * ODL_HD;
+            const uint vBase = token * 3u * C + 2u * C + h * ODL_HD;
+            float qn = 0.0, kn = 0.0;
+            for (uint d = 0; d < ODL_HD; ++d) {
+                float q = ODL_LD(qkv, qBase + d);
+                float k = ODL_LD(qkv, kBase + d);
+                qn += q * q;
+                kn += k * k;
+            }
+            qn = sqrt(qn);
+            kn = sqrt(kn);
+            const float invQ = qn > 0.0 ? 1.0 / qn : 0.0;
+            const float invK = kn > 0.0 ? 1.0 / kn : 0.0;
+            const float qs = ODL_LD(qscale, h);
+            for (uint d = 0; d < ODL_HD; ++d) {
+                // window blocks: one half-round of the normalized q, then the
+                // learned scale in f32 (exact CPU reference order)
+                float qq = odl_f16_to_f32(odl_f32_to_f16(ODL_LD(qkv, qBase + d) * invQ)) * qs;
+                float kk = odl_f16_to_f32(odl_f32_to_f16(ODL_LD(qkv, kBase + d) * invK));
+                qE[dst + d] = odl_f32_to_f16(odl_pub_e4m3(qq));
+                kE[dst + d] = odl_f32_to_f16(odl_pub_e4m3(kk));
+                vE[dst + d] = odl_f32_to_f16(odl_pub_e4m3(ODL_LD(qkv, vBase + d)));
+            }
+        } else {
+            for (uint d = 0; d < ODL_HD; ++d) {
+                qE[dst + d] = 0u;
+                kE[dst + d] = 0u;
+                vE[dst + d] = 0u;
+            }
+        }
+        barrier();
+
+        // 2) this thread's query row: S = q·k + prior, bit-trick softmax, O = P·V
+        float denom = 0.0;
+        float prow[64];
+        const uint qo = ti * ODL_HD;
+        for (uint b = 0; b < ODL_WIN * ODL_WIN; ++b) {
+            float s = hasPrior ? ODL_LD(prior, h * 64u * 64u + ti * 64u + b) : 0.0;
+            for (uint d = 0; d < ODL_HD; ++d)
+                s += odl_f16_to_f32(qE[qo + d]) * odl_f16_to_f32(kE[b * ODL_HD + d]);
+            float e = odl_window_exp(s);
+            prow[b] = e;
+            denom += e;
+        }
+        const float invD = odl_f16_to_f32(odl_f32_to_f16(1.0 / denom));
+        if (inside) {
+            for (uint d = 0; d < ODL_HD; ++d) {
+                float o = 0.0;
+                for (uint b = 0; b < ODL_WIN * ODL_WIN; ++b)
+                    o += odl_pub_e4m3(prow[b] * invD) * odl_f16_to_f32(vE[b * ODL_HD + d]);
+                ODL_ST(headO, token * C + h * ODL_HD + d, odl_pub_e4m3(o));
+            }
+        }
+        barrier();
+    }
+}

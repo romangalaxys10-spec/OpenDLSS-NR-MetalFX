@@ -1,0 +1,49 @@
+// odl_motion.comp — 16x16 block matching with +/-6 search (step 2), SAD on
+// the red (luma) channel, sampled every 2 pixels. Port of Media.metal's
+// odl_motion; the motion texture is RGBA32Float on Vulkan (Metal used
+// RG32Float) — the extra channels are zero and the host reads .xy only.
+//
+// Push constants: (none)
+// Bindings: 0 prev RGBA32Float (luma in rgb), 1 curr RGBA32Float,
+//           2 mv RGBA32Float (dx, dy, 0, 0)
+//
+// Dispatch: 8x8 workgroups over the current frame.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D prev;
+layout(rgba32f, set = 0, binding = 1) restrict readonly uniform image2D curr;
+layout(rgba32f, set = 0, binding = 2) restrict writeonly uniform image2D mv;
+
+void main() {
+    const ivec2 currSz = imageSize(curr);
+    const ivec2 prevSz = imageSize(prev);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= currSz.x || gid.y >= currSz.y) return;
+
+    const int block = 16, search = 6;
+    float best = 1e30;
+    int bestDx = 0, bestDy = 0;
+    for (int dy = -search; dy <= search; dy += 2) {
+        for (int dx = -search; dx <= search; dx += 2) {
+            float sad = 0.0;
+            for (int y = 0; y < block; y += 2) {
+                int cy = gid.y + y;
+                if (cy >= currSz.y) break;
+                for (int x = 0; x < block; x += 2) {
+                    int cx = gid.x + x;
+                    if (cx >= currSz.x) break;
+                    float a = imageLoad(curr, ivec2(cx, cy)).r;
+                    ivec2 p = clamp(ivec2(cx + dx, cy + dy), ivec2(0), prevSz - 1);
+                    sad += abs(a - imageLoad(prev, p).r);
+                }
+            }
+            if (sad < best) { best = sad; bestDx = dx; bestDy = dy; }
+        }
+    }
+    imageStore(mv, gid, vec4(float(bestDx), float(bestDy), 0.0, 0.0));
+}

@@ -1,0 +1,22 @@
+# NOTICE — third-party components
+
+## stb_image / stb_image_write
+- Files: third_party/stb_image.h, third_party/stb_image_write.h
+- Author: Sean Barrett (nothings), https://github.com/nothings/stb
+- License: public domain / MIT (dual); used here under public domain.
+- Used for: PNG decode/encode in the CLI and tests.
+
+## Reference architecture
+- Project: OpenDLSS-NR by maanHimself, https://github.com/maanHimself/OpenDLSS-NR
+- License: MIT. Its documentation (network semantics, geometry rules, numerics
+  contract) is the specification this implementation ports. No source code was
+  copied; the numerics were re-derived from the specification and verified
+  against its published tables.
+- The DLSS network family it reimplements was published by NVIDIA Research
+  (https://research.nvidia.com/labs/adlr/DLSS5/). This project contains no
+  NVIDIA software, weights, headers, or instructions for obtaining them and is
+  not affiliated with, endorsed by, or supported by NVIDIA.
+
+## Apple frameworks
+- Metal, MetalFX, MetalKit, SwiftUI: system frameworks of macOS, linked
+  dynamically per Apple's standard licensing. No Apple SDK code is vendored.

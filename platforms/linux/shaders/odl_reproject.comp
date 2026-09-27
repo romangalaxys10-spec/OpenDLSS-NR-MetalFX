@@ -1,0 +1,56 @@
+// odl_reproject.comp — bilinear reprojection of the previous output with a
+// confidence weight from the bilinear fractional position. Port of
+// Media.metal's odl_reproject (history absence is a push-constant flag here —
+// GLSL cannot check image extents against zero the way Metal's empty-texture
+// test does; the host binds a 1x1 dummy image).
+//
+// Push constants: [0] hasHistory
+// Bindings: 0 history RGBA32Float, 1 mv RGBA32Float, 2 reproj RGBA32Float,
+//           3 conf RGBA32Float
+//
+// Dispatch: 16x16 workgroups over the motion field.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D history;
+layout(rgba32f, set = 0, binding = 1) restrict readonly uniform image2D mv;
+layout(rgba32f, set = 0, binding = 2) restrict writeonly uniform image2D reproj;
+layout(rgba32f, set = 0, binding = 3) restrict writeonly uniform image2D conf;
+
+void main() {
+    const ivec2 sz = imageSize(mv);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= sz.x || gid.y >= sz.y) return;
+
+    vec2 m = imageLoad(mv, gid).xy;
+    vec2 s = vec2(gid) - m;                    // where this pixel was
+    if (pcu(0) == 0u) {
+        imageStore(reproj, gid, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(conf, gid, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+    if (s.x < -0.5 || s.y < -0.5 ||
+        s.x > float(sz.x) - 0.5 || s.y > float(sz.y) - 0.5) {
+        imageStore(reproj, gid, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(conf, gid, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+    vec2 sp = clamp(s, vec2(0.0), vec2(sz) - 1.0);
+    ivec2 i0 = ivec2(floor(sp.x), floor(sp.y));
+    vec2 f = sp - vec2(i0);
+    ivec2 i1 = min(i0 + 1, sz - 1);
+    vec4 h00 = imageLoad(history, i0);
+    vec4 h10 = imageLoad(history, ivec2(i1.x, i0.y));
+    vec4 h01 = imageLoad(history, ivec2(i0.x, i1.y));
+    vec4 h11 = imageLoad(history, i1);
+    vec4 r = h00 * (1.0 - f.x) * (1.0 - f.y) + h10 * f.x * (1.0 - f.y)
+           + h01 * (1.0 - f.x) * f.y + h11 * f.x * f.y;
+    imageStore(reproj, gid, vec4(clamp(r.rgb, 0.0, 1.0), 1.0));
+    float edge = max(abs(f.x - 0.5), abs(f.y - 0.5));
+    imageStore(conf, gid,
+               vec4(clamp(1.0 - 1.5 * max(0.0, edge - 0.25), 0.0, 1.0), 0.0, 0.0, 1.0));
+}

@@ -1,0 +1,30 @@
+// odl_temporal_blend.comp — out = clamp(lerp(current, reproj, w)) with
+// w = min(confidence, maxBlend). Port of Media.metal's odl_temporal_blend.
+//
+// Push constants: [0] maxBlend (f32)
+// Bindings: 0 current RGBA32Float, 1 reproj RGBA32Float, 2 conf RGBA32Float,
+//           3 dst RGBA32Float
+//
+// Dispatch: 16x16 workgroups over the frame.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D current;
+layout(rgba32f, set = 0, binding = 1) restrict readonly uniform image2D reproj;
+layout(rgba32f, set = 0, binding = 2) restrict readonly uniform image2D conf;
+layout(rgba32f, set = 0, binding = 3) restrict writeonly uniform image2D dst;
+
+void main() {
+    const ivec2 sz = imageSize(current);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= sz.x || gid.y >= sz.y) return;
+
+    vec4 c = imageLoad(current, gid);
+    vec4 r = imageLoad(reproj, gid);
+    float w = min(imageLoad(conf, gid).r, pcf(0));
+    imageStore(dst, gid, vec4(clamp(c.rgb * (1.0 - w) + r.rgb * w, 0.0, 1.0), 1.0));
+}

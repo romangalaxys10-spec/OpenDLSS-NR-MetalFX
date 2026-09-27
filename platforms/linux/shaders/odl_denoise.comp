@@ -1,0 +1,43 @@
+// odl_denoise.comp — edge-aware bilateral denoiser (luma-guided), f32 storage
+// images. Port of Media.metal's odl_denoise.
+//
+// Push constants: [0] strength (f32)
+// Bindings: 0 src RGBA32Float, 1 dst RGBA32Float
+//
+// Dispatch: 16x16 workgroups over the image.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D src;
+layout(rgba32f, set = 0, binding = 1) restrict writeonly uniform image2D dst;
+
+void main() {
+    const ivec2 sz = imageSize(src);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= sz.x || gid.y >= sz.y) return;
+
+    vec4 c = imageLoad(src, gid);
+    const float strength = pcf(0);
+    const float sigmaColor = 0.08 + 0.12 * strength;
+    const int radius = strength > 0.75 ? 3 : 2;
+    float cl = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3 acc = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            ivec2 p = clamp(gid + ivec2(dx, dy), ivec2(0), sz - 1);
+            vec4 n = imageLoad(src, p);
+            vec3 dc = n.rgb - c.rgb;
+            float dl = dot(n.rgb, vec3(0.2126, 0.7152, 0.0722)) - cl;
+            float w = exp(-dot(dc, dc) / (2.0 * sigmaColor * sigmaColor)
+                          - dl * dl / (2.0 * sigmaColor * sigmaColor * 0.25));
+            acc += n.rgb * w;
+            wsum += w;
+        }
+    }
+    imageStore(dst, gid, vec4(clamp(acc / wsum, 0.0, 1.0), 1.0));
+}

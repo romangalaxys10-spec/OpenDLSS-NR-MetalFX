@@ -1,0 +1,36 @@
+// odl_block_skip.comp — block residual: y = pub(x * ffnScale + ffnOut).
+// 32-channel window blocks publish raw f16, wider blocks and the ViT publish
+// through E4M3 (reference asymmetry). ffnOut is the FFN's f32 output
+// (see odl_ffn.comp); the missing-scale default is 1.0 like the CPU.
+//
+// Push constants: [0] tokens [1] C [2] rawF16 [3] hasScale
+// Bindings: 0 x [tokens][C], 1 ffn [tokens][C] f32, 2 ffnScale [C],
+//           6 y [tokens][C]
+//
+// Dispatch: 64-thread workgroups over tokens*C.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer X { uint x[]; };
+layout(std430, set = 0, binding = 1) restrict readonly buffer FfnF32 { float ffn[]; };
+layout(std430, set = 0, binding = 2) restrict readonly buffer FfnScale { uint ffnScale[]; };
+layout(std430, set = 0, binding = 6) restrict writeonly buffer Y { uint y[]; };
+
+void main() {
+    const uint tokens = pcu(0);
+    const uint C = pcu(1);
+    const bool rawF16 = pcu(2) != 0u;
+    const bool hasScale = pcu(3) != 0u;
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= tokens * C) return;
+
+    float scale = 1.0;
+    if (hasScale) scale = ODL_LD(ffnScale, gid % C);
+    float v = ODL_LD(x, gid) * scale + ffn[gid];
+    y[gid] = rawF16 ? odl_f32_to_f16(v)
+                    : odl_f32_to_f16(odl_pub_e4m3(v));
+}

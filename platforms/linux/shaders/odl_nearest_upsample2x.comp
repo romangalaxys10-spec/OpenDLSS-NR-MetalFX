@@ -1,0 +1,28 @@
+// odl_nearest_upsample2x.comp — decoder 2x nearest upsample (pure copy of the
+// source element; no publication step). Port of Graph.metal's kernel.
+//
+// Push constants: [0..1] srcSize.xy [2..3] dstSize.xy [4] C
+// Bindings: 0 src [sw*sh][C], 4 dst [dw*dh][C]
+//
+// Dispatch: 64-thread workgroups over dw*dh*C.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer Src { uint src[]; };
+layout(std430, set = 0, binding = 4) restrict writeonly buffer Dst { uint dst[]; };
+
+void main() {
+    const uvec2 srcSize = pcuv2(0);
+    const uvec2 dstSize = pcuv2(2);
+    const uint C = pcu(4);
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= dstSize.x * dstSize.y * C) return;
+    const uint c  = gid % C;
+    const uint px = (gid / C) % dstSize.x;
+    const uint py = (gid / C) / dstSize.x;
+    dst[gid] = src[((py / 2u) * srcSize.x + (px / 2u)) * C + c];
+}

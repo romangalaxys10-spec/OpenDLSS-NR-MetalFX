@@ -1,0 +1,42 @@
+// odl_decoder_skip.comp — decoder transition tail: v = up; v = f16(v *
+// in_scale) [in_scale present on the CPU reference; the Metal port omitted
+// it]; v = f16(v + skip * scale) [one f16 FMA]; publish E4M3.
+//
+// Push constants: [0] tokens [1] C [2] hasSkip [3] hasScale [4] hasInScale
+// Bindings: 0 up [dstW*dstH][C], 1 skip [dstW*dstH][C] (dummy when absent),
+//           2 scale [C] (dummy), 3 inScale [C] (dummy), 5 out [dstW*dstH][C]
+//
+// Dispatch: 64-thread workgroups over tokens*C.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer Up { uint up[]; };
+layout(std430, set = 0, binding = 1) restrict readonly buffer Skip { uint skip[]; };
+layout(std430, set = 0, binding = 2) restrict readonly buffer Scale { uint scale[]; };
+layout(std430, set = 0, binding = 3) restrict readonly buffer InScale { uint inScale[]; };
+layout(std430, set = 0, binding = 5) restrict writeonly buffer Out { uint outBuf[]; };
+
+void main() {
+    const uint tokens = pcu(0);
+    const uint C = pcu(1);
+    const bool hasSkip    = pcu(2) != 0u;
+    const bool hasScale   = pcu(3) != 0u;
+    const bool hasInScale = pcu(4) != 0u;
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= tokens * C) return;
+
+    float v = ODL_LD(up, gid);
+    if (hasInScale)
+        v = odl_f16_to_f32(odl_f32_to_f16(v * ODL_LD(inScale, gid % C)));
+    if (hasSkip) {
+        float s = ODL_LD(skip, gid);
+        if (hasScale)
+            s = odl_f16_to_f32(odl_f32_to_f16(s * ODL_LD(scale, gid % C)));
+        v = odl_f16_to_f32(odl_f32_to_f16(v + s));
+    }
+    outBuf[gid] = odl_f32_to_f16(odl_pub_e4m3(v));
+}

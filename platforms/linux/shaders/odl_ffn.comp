@@ -1,0 +1,95 @@
+// odl_ffn.comp — one block's feed-forward network, one threadgroup per token.
+// Port of Graph.metal's odl_ffn, generalized to the three FFN shapes the CPU
+// reference (neural_graph_cpu.cpp) actually defines:
+//   dense (C=32 or ViT):  C -> hidden (128 / 4096) -> C, SiLU after stage 1,
+//                         output published E4M3 at stage 1, raw f32 out.
+//   wide  (64/128/256):   paths = C/32, each path C -> 128 -> 32 (SiLU after
+//                         the first GEMM), concat, then one C -> C contraction.
+//   branch (C=512):       8 branches, each 64 -> 256 -> 64 with NO activation
+//                         (matches the CPU code), concat, then C -> C.
+// The Metal kernel's stage-2 indexing only handled the dense shape; this port
+// implements the reference semantics for every shape (see the worklog).
+//
+// The FFN result is written as f32 (the CPU keeps outF in f32 until the block
+// skip applies the residual); the Metal port's extra half-rounding there is
+// not part of the reference numerics.
+//
+// Push constants: [0] tokens [1] C [2] hidden [3] paths
+//                 [4] perPathOut [5] inSlice (0 = full C)
+//                 [6] applySilu [7] hasW3
+//
+// Dispatch: one 128-thread workgroup per token.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer X {
+    uint x[];      // [tokens][C] half-as-uint32
+};
+layout(std430, set = 0, binding = 1) restrict readonly buffer W1 { uint w1[]; };
+layout(std430, set = 0, binding = 2) restrict readonly buffer B1 { uint b1[]; };
+layout(std430, set = 0, binding = 3) restrict readonly buffer W2 { uint w2[]; };
+layout(std430, set = 0, binding = 4) restrict readonly buffer B2 { uint b2[]; };
+layout(std430, set = 0, binding = 5) restrict readonly buffer W3 { uint w3[]; };
+layout(std430, set = 0, binding = 6) restrict readonly buffer B3 { uint b3[]; };
+layout(std430, set = 0, binding = 11) restrict writeonly buffer Y {
+    float y[];     // [tokens][C] f32 (pre-skip FFN output)
+};
+
+shared uint s1[4096];   // paths*hidden (max: ViT 1x4096, branch 8x256, wide 16x128)
+shared uint s2[1024];   // paths*perPathOut (max: C=1024)
+
+void main() {
+    const uint tokens      = pcu(0);
+    const uint C           = pcu(1);
+    const uint hidden      = pcu(2);
+    const uint paths       = pcu(3);
+    const uint perPathOut  = pcu(4);
+    const uint inW         = pcu(5) != 0u ? pcu(5) : C;   // per-path input width
+    const bool applySilu   = pcu(6) != 0u;
+    const bool hasW3       = pcu(7) != 0u;
+    const uint tid   = gl_LocalInvocationID.x;
+    const uint token = gl_WorkGroupID.x;
+    if (token >= tokens) return;
+    const uint xBase = token * C;
+
+    // stage 1: hidden path rows, published E4M3 (the reference's stage grid)
+    for (uint row = tid; row < paths * hidden; row += 128u) {
+        const uint pathId = row / hidden;
+        const uint base   = pathId * inW;
+        float s = ODL_LD(b1, row);
+        for (uint i = 0; i < inW; ++i)
+            s += ODL_LD(w1, row * inW + i) * ODL_LD(x, xBase + base + i);
+        float v = applySilu ? odl_silu(s) : s;
+        s1[row] = odl_f32_to_f16(odl_pub_e4m3(v));
+    }
+    barrier();
+
+    // stage 2: per-path outputs (raw f16 sums; concat in s2)
+    for (uint row = tid; row < paths * perPathOut; row += 128u) {
+        const uint pathId = row / perPathOut;
+        float s = ODL_LD(b2, row);
+        for (uint i = 0; i < hidden; ++i)
+            s += ODL_LD(w2, row * hidden + i) * odl_f16_to_f32(s1[pathId * hidden + i]);
+        s2[row] = odl_f32_to_f16(s);
+    }
+    barrier();
+
+    if (!hasW3) {
+        for (uint row = tid; row < C; row += 128u)
+            y[xBase + row] = odl_f16_to_f32(s2[row]);
+        return;
+    }
+    // stage 3: C -> C contraction over the E4M3-published concat
+    for (uint row = tid; row < C; row += 128u) {
+        float s = ODL_LD(b3, row);
+        for (uint i = 0; i < C; ++i) {
+            float xi = odl_pub_e4m3(odl_f16_to_f32(s2[i]));
+            s += ODL_LD(w3, row * C + i) * xi;
+        }
+        y[xBase + row] = s;
+    }
+}

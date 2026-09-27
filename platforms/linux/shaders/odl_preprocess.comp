@@ -1,0 +1,82 @@
+// odl_preprocess.comp — pack the 16-lane feature field.
+// Port of Preprocess.metal's odl_preprocess with the CPU reference's clamped
+// sample centering (core/src/pipeline.cpp). Lane order matches the reference
+// preprocess:
+//   0-2 Gaussian lanes (Box-Muller from hash of the PADDED coordinate + seed)
+//   3   constant 1
+//   4-6 proxy, centred: f16(f16(c) - 0.5) * 0.125
+//   7-9 reprojected history (copy of 4-6 without history)
+//   10  style/128 · 11 tone · 12-14 structure/skin/automask · 15 0
+// Outside the valid rect the image is mirrored; noise keeps the padded coord.
+//
+// Dispatch: 16x16 workgroups over the padded field.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D proxyTex;
+layout(rgba32f, set = 0, binding = 1) restrict readonly uniform image2D historyTex;
+layout(std430, set = 0, binding = 3) restrict buffer Features {
+    uint features[];   // [fieldH * fieldW][16] half-as-uint32
+};
+
+void main() {
+    const uint FW = imageSize(proxyTex).x;   // caller binds the field-sized proxy
+    const uint FH = imageSize(proxyTex).y;
+    const uvec3 gid3 = gl_GlobalInvocationID;
+    const uvec2 gid = gid3.xy;
+    if (gid.x >= FW || gid.y >= FH) return;
+
+    // three Gaussian lanes from the padded-coordinate hash
+    uint h0 = odl_hash(gid.x, gid.y, 0u, pcu(7));
+    uint h1 = odl_hash(gid.x, gid.y, 0x9E37u, pcu(7));
+    float u1 = max(float(h0 >> 8) / 16777216.0, 1e-9);
+    float u2 = float(h1 >> 8) / 16777216.0;
+    float r1 = sqrt(-2.0 * log(u1));
+    float g0 = r1 * cos(6.2831853 * u2);
+    float g1 = r1 * cos(6.2831853 * u2 + 2.0943951);
+    float g2 = r1 * cos(6.2831853 * u2 + 4.1887902);
+
+    // image sample mirrored off the valid rectangle
+    uvec2 valid = pcuv2(5);
+    int sx = odl_mirror(int(gid.x), valid.x);
+    int sy = odl_mirror(int(gid.y), valid.y);
+    sx = clamp(sx, 0, int(valid.x) - 1);
+    sy = clamp(sy, 0, int(valid.y) - 1);
+    vec4 p = imageLoad(proxyTex, ivec2(sx, sy));
+    vec4 q = p;
+    if (pcu(8) != 0u) q = imageLoad(historyTex, ivec2(sx, sy));
+
+    uint base = (gid.y * FW + gid.x) * 16u;
+    features[base + 0u] = odl_f32_to_f16(g0);
+    features[base + 1u] = odl_f32_to_f16(g1);
+    features[base + 2u] = odl_f32_to_f16(g2);
+    features[base + 3u] = odl_f32_to_f16(1.0);
+    for (int c = 0; c < 3; ++c) {
+        // f16(f16(c) - 0.5) * 0.125 — every step through the half grid
+        float cv = clamp(p[c], 0.0, 1.0);
+        float hc = odl_f16_to_f32(odl_f32_to_f16(cv));
+        features[base + uint(4 + c)] =
+            odl_f32_to_f16(odl_f16_to_f32(odl_f32_to_f16(hc - 0.5)) * 0.125);
+    }
+    if (pcu(8) != 0u) {
+        for (int c = 0; c < 3; ++c) {
+            float cv = clamp(q[c], 0.0, 1.0);
+            float hc = odl_f16_to_f32(odl_f32_to_f16(cv));
+            features[base + uint(7 + c)] =
+                odl_f32_to_f16(odl_f16_to_f32(odl_f32_to_f16(hc - 0.5)) * 0.125);
+        }
+    } else {
+        for (int c = 0; c < 3; ++c)
+            features[base + uint(7 + c)] = features[base + uint(4 + c)];
+    }
+    features[base + 10u] = odl_f32_to_f16(pcf(0));   // style
+    features[base + 11u] = odl_f32_to_f16(pcf(1));   // tone
+    features[base + 12u] = odl_f32_to_f16(pcf(2));   // structure
+    features[base + 13u] = odl_f32_to_f16(pcf(3));   // skin
+    features[base + 14u] = odl_f32_to_f16(pcf(4));   // autoMask
+    features[base + 15u] = odl_f32_to_f16(0.0);
+}

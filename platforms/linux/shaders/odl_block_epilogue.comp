@@ -1,0 +1,33 @@
+// odl_block_epilogue.comp — out = pub_e4m3(y * attnScale + projOut).
+// y is the block-skip result (f16), projOut the attention projection output
+// (raw f16); the missing-scale default is 1.0 like the CPU reference.
+//
+// Push constants: [0] tokens [1] C [2] hasScale
+// Bindings: 0 y [tokens][C], 1 projOut [tokens][C], 2 attnScale [C],
+//           5 out [tokens][C]
+//
+// Dispatch: 64-thread workgroups over tokens*C.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) restrict readonly buffer Y { uint y[]; };
+layout(std430, set = 0, binding = 1) restrict readonly buffer ProjOut { uint projOut[]; };
+layout(std430, set = 0, binding = 2) restrict readonly buffer AttnScale { uint attnScale[]; };
+layout(std430, set = 0, binding = 5) restrict writeonly buffer Out { uint outBuf[]; };
+
+void main() {
+    const uint tokens = pcu(0);
+    const uint C = pcu(1);
+    const bool hasScale = pcu(2) != 0u;
+    const uint gid = gl_GlobalInvocationID.x;
+    if (gid >= tokens * C) return;
+
+    float scale = 1.0;
+    if (hasScale) scale = ODL_LD(attnScale, gid % C);
+    float v = ODL_LD(y, gid) * scale + ODL_LD(projOut, gid);
+    outBuf[gid] = odl_f32_to_f16(odl_pub_e4m3(v));
+}

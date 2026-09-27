@@ -1,0 +1,39 @@
+// odl_upscale_h.comp — Lanczos3 resampling, horizontal pass (f32 -> f32).
+// Port of Media.metal's odl_upscale_h.
+//
+// Push constants: [0] dstW
+// Bindings: 0 src RGBA32Float, 1 dst RGBA32Float (dstW x srcH)
+//
+// Dispatch: 16x16 workgroups over dstW x srcH.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D src;
+layout(rgba32f, set = 0, binding = 1) restrict writeonly uniform image2D dst;
+
+void main() {
+    const uint dstW = pcu(0);
+    const ivec2 srcSz = imageSize(src);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= int(dstW) || gid.y >= srcSz.y) return;
+
+    const float scale = float(srcSz.x) / float(dstW);
+    const float support = 3.0;
+    float cx = (float(gid.x) + 0.5) * scale - 0.5;
+    int lo = int(floor(cx - support + 0.5));
+    int hi = int(floor(cx + support + 0.5));
+    vec4 acc = vec4(0.0);
+    float wsum = 0.0;
+    for (int s = lo; s <= hi; ++s) {
+        float w = odl_lanczos3((float(s) - cx) * min(scale, 1.0));
+        if (w == 0.0) continue;
+        uint sx = uint(clamp(s, 0, srcSz.x - 1));
+        acc += imageLoad(src, ivec2(int(sx), gid.y)) * w;
+        wsum += w;
+    }
+    imageStore(dst, gid, acc / wsum);
+}

@@ -1,0 +1,41 @@
+// odl_head_composite.comp — the network's output head:
+//   neural  = clamp(proxy + rgb/4, 0, 1)
+//   weight  = clamp(sigmoid(logit) * blendScale, 0, 1)
+//   display = lerp(neural, history, weight)
+// Port of Media.metal's odl_head_composite (history absence is a
+// push-constant flag; a 1x1 dummy image is bound when absent).
+//
+// Push constants: [0] blendScale (f32)  [1] hasHistory
+// Bindings: 0 proxy RGBA32Float (valid size), 1 headTex RGBA32Float (field
+//           res: rgb residual, a = temporal logit), 2 history RGBA32Float,
+//           3 dst RGBA32Float
+//
+// Dispatch: 16x16 workgroups over the proxy.
+// Copyright (c) 2026 OpenDLSS-NR MetalFX contributors. MIT License.
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "Common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) restrict readonly uniform image2D proxy;
+layout(rgba32f, set = 0, binding = 1) restrict readonly uniform image2D headTex;
+layout(rgba32f, set = 0, binding = 2) restrict readonly uniform image2D history;
+layout(rgba32f, set = 0, binding = 3) restrict writeonly uniform image2D dst;
+
+void main() {
+    const ivec2 sz = imageSize(proxy);
+    const ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= sz.x || gid.y >= sz.y) return;
+
+    vec4 p = imageLoad(proxy, gid);
+    vec4 h = imageLoad(headTex, gid);
+    vec3 neural = clamp(p.rgb + h.rgb / 4.0, 0.0, 1.0);
+    vec3 outv = neural;
+    if (pcu(1) != 0u) {
+        float w = clamp(1.0 / (1.0 + exp(-h.a)) * pcf(0), 0.0, 1.0);
+        vec4 q = imageLoad(history, gid);
+        outv = neural * (1.0 - w) + q.rgb * w;
+    }
+    imageStore(dst, gid, vec4(outv, 1.0));
+}
