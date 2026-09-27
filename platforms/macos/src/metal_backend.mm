@@ -79,11 +79,11 @@ public:
         info_.neuralGraph = true;
         info_.fp16Storage = true;
         info_.e4m3Quant = true;
-        info_.maxTextureDim = (uint32_t)device_.supportsFamily(MTLGPUFamilyApple7) ? 16384 : 8192;
+        info_.maxTextureDim = 16384;
         if (@available(macOS 13.0, *)) {
             // MetalFX availability: spatial on all Apple Silicon, temporal needs Apple7+
             info_.metalFxSpatial = true;
-            info_.metalFxTemporal = device_.supportsFamily(MTLGPUFamilyApple7);
+            info_.metalFxTemporal = [device_ supportsFamily:MTLGPUFamilyApple7] ? true : false;
         }
         info_.details = "MetalFX spatial/temporal scalers + Metal compute graph";
         ok_ = true;
@@ -96,13 +96,13 @@ public:
         if (!ok_ || strength <= 0) { output = input; return true; }
         id<MTLTexture> src = makeTexture(input);
         id<MTLTexture> dst = newTexture(input.width, input.height);
-        id<MTLBuffer> sbuf = floatBuf({strength});
+        GpuBuffer sbuf = floatBuf({strength});
         id<MTLCommandBuffer> cb = [queue_ commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         id<MTLComputePipelineState> p = pipeline(lib_, pipes_, device_, "odl_denoise");
         [enc setComputePipelineState:p];
         [enc setTexture:src atIndex:0];
-        [enc setBuffer:sbuf offset:0 atIndex:0];
+        [enc setBuffer:sbuf.buf offset:0 atIndex:0];
         [enc setTexture:dst atIndex:1];
         dispatch(enc, p, MTLSizeMake(input.width, input.height, 1), MTLSizeMake(16, 16, 1));
         [enc endEncoding];
@@ -127,23 +127,27 @@ public:
         if (fx) {
             fx.colorTexture = src;
             fx.outputTexture = up;
-            [fx encodeTransformToCommandBuffer:cb];
+            NSError* fxErr = nil;
+            if (![fx encodeTransformToCommandBuffer:cb error:&fxErr]) {
+                log_error("metalfx: transform encode failed: %s",
+                          fxErr.localizedDescription.UTF8String ?: "unknown");
+            }
             [fx encodeColorToCommandBuffer:cb];
             [enc endEncoding];
             [cb commit]; [cb waitUntilCompleted];
             cb = [queue_ commandBuffer];
             enc = [cb computeCommandEncoder];
         } else {
-            id<MTLBuffer> w = floatBuf({float(OW)});
+            GpuBuffer w = floatBuf({float(OW)});
             id<MTLComputePipelineState> ph = pipeline(lib_, pipes_, device_, "odl_upscale_h");
             [enc setComputePipelineState:ph];
-            [enc setTexture:src atIndex:0]; [enc setBuffer:w offset:0 atIndex:0];
+            [enc setTexture:src atIndex:0]; [enc setBuffer:w.buf offset:0 atIndex:0];
             [enc setTexture:tmp atIndex:1];
             dispatch(enc, ph, MTLSizeMake(OW, input.height, 1), MTLSizeMake(16, 16, 1));
-            id<MTLBuffer> h = floatBuf({float(OH)});
+            GpuBuffer h = floatBuf({float(OH)});
             id<MTLComputePipelineState> pv = pipeline(lib_, pipes_, device_, "odl_upscale_v");
             [enc setComputePipelineState:pv];
-            [enc setTexture:tmp atIndex:0]; [enc setBuffer:h offset:0 atIndex:0];
+            [enc setTexture:tmp atIndex:0]; [enc setBuffer:h.buf offset:0 atIndex:0];
             [enc setTexture:up atIndex:1];
             dispatch(enc, pv, MTLSizeMake(OW, OH, 1), MTLSizeMake(16, 16, 1));
         }
@@ -154,7 +158,7 @@ public:
             id<MTLBuffer> sbuf = floatBuf({sharpen});
             id<MTLComputePipelineState> ps = pipeline(lib_, pipes_, device_, "odl_sharpen");
             [enc setComputePipelineState:ps];
-            [enc setTexture:up atIndex:0]; [enc setBuffer:sbuf offset:0 atIndex:0];
+            [enc setTexture:up atIndex:0]; [enc setBuffer:sbuf.buf offset:0 atIndex:0];
             [enc setTexture:fin atIndex:1];
             dispatch(enc, ps, MTLSizeMake(OW, OH, 1), MTLSizeMake(16, 16, 1));
             [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
@@ -170,7 +174,6 @@ public:
     bool loadModel(const std::string& modelDir) override {
         model_ = Model::load(modelDir);
         if (!model_) return false;
-        weights_.clear();
         tensorBufs_.clear();
         // upload every tensor as a half buffer (host decodes E4M3 -> f16 once)
         for (const auto& t : model_->tensors()) {
@@ -247,7 +250,7 @@ public:
                     // down-GEMM + upsample + skip
                     GpuBuffer proj = makeBuffer(size_t(liveW) * liveH * C * 2);
                     runGemm(enc, state, tensorNamed("trans" + std::to_string(p.level) + ".down"),
-                            nullptr, liveW*liveH, C, p.channels, 1, proj);
+                            GpuBuffer{}, liveW*liveH, C, p.channels, 1, proj);
                     GpuBuffer up = makeBuffer(size_t(bw) * bh * C * 2);
                     runUpsample(enc, proj, liveW, liveH, bw, bh, C, up);
                     GpuBuffer out = makeBuffer(size_t(bw) * bh * C * 2);
@@ -258,10 +261,10 @@ public:
                                    bw*bh, C, out, hasSk);
                     state = out; liveC = C;
                 } else if (p.channels * 2 == C) {
-                    runGemm(enc, state, tensorNamed("vitin.up"), nullptr, tokens, C, p.channels, 0, state);
+                    runGemm(enc, state, tensorNamed("vitin.up"), GpuBuffer{}, tokens, C, p.channels, 0, state);
                     liveC = C;
                 } else if (p.channels == C * 2) {
-                    runGemm(enc, state, tensorNamed("vitout.down"), nullptr, tokens, C, p.channels, 1, state);
+                    runGemm(enc, state, tensorNamed("vitout.down"), GpuBuffer{}, tokens, C, p.channels, 1, state);
                     liveC = C;
                 }
             }
@@ -360,13 +363,13 @@ public:
         id<MTLTexture> rp = makeTexture(reproj);
         id<MTLTexture> cf = makeTexture(confidence);
         id<MTLTexture> dst = newTexture(current.width, current.height);
-        id<MTLBuffer> mb = floatBuf({maxBlend});
+        GpuBuffer mb = floatBuf({maxBlend});
         id<MTLCommandBuffer> cb = [queue_ commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         id<MTLComputePipelineState> p = pipeline(lib_, pipes_, device_, "odl_temporal_blend");
         [enc setComputePipelineState:p];
         [enc setTexture:cur atIndex:0]; [enc setTexture:rp atIndex:1]; [enc setTexture:cf atIndex:2];
-        [enc setBuffer:mb offset:0 atIndex:0];
+        [enc setBuffer:mb.buf offset:0 atIndex:0];
         [enc setTexture:dst atIndex:3];
         dispatch(enc, p, MTLSizeMake(current.width, current.height, 1), MTLSizeMake(16,16,1));
         [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
@@ -385,10 +388,14 @@ public:
                 d.outputWidth = outputW; d.outputHeight = outputH;
                 d.colorTextureFormat = MTLPixelFormatRGBA16Float;
                 d.depthTextureFormat = MTLPixelFormatR32Float;
-                d.motionVectorTextureFormat = MTLPixelFormatRG16Float;
-                d.supportsFeedback = YES;
-                d.isAutoExposureEnabled = NO;
+                d.motionTextureFormat = MTLPixelFormatRG16Float;
                 tScaler_ = [d newTemporalScalerWithDevice:device_];
+                if (tScaler_) {
+                    if ([tScaler_ respondsToSelector:@selector(setIsAutoExposureEnabled:)])
+                        [tScaler_ setIsAutoExposureEnabled:NO];
+                    if ([tScaler_ respondsToSelector:@selector(setSupportsFeedback:)])
+                        [tScaler_ setSupportsFeedback:YES];
+                }
             }
         }
         gColorTex_ = newTextureHalf(renderW, renderH);
@@ -421,9 +428,10 @@ public:
         if (tScaler_) {
             tScaler_.colorTexture = gColorTex_;
             tScaler_.depthTexture = gDepthTex_;
-            tScaler_.motionVectorTexture = gMotionTex_;
+            tScaler_.motionTexture = gMotionTex_;
             if (!tScaler_.outputTexture) tScaler_.outputTexture = gOutTex_;
-            tScaler_.exposureFactor = in.exposure > 0 ? in.exposure : 1.0f;
+            if ([tScaler_ respondsToSelector:@selector(setExposureFactor:)])
+                [tScaler_ setExposureFactor:(in.exposure > 0 ? in.exposure : 1.0f)];
             tScaler_.reset = in.resetHistory ? YES : NO;
             [tScaler_ encodeToCommandBuffer:cb];
         } else {
@@ -431,16 +439,16 @@ public:
             // (the CPU-shaped path; acceptable before MetalFX-capable hardware)
             id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
             id<MTLTexture> tmp = newTextureHalf(gOutW_, gRenderH_);
-            id<MTLBuffer> w = floatBuf({float(gOutW_)});
+            GpuBuffer w = floatBuf({float(gOutW_)});
             id<MTLComputePipelineState> ph = pipeline(lib_, pipes_, device_, "odl_upscale_h");
             [enc setComputePipelineState:ph];
-            [enc setTexture:gColorTex_ atIndex:0]; [enc setBuffer:w offset:0 atIndex:0];
+            [enc setTexture:gColorTex_ atIndex:0]; [enc setBuffer:w.buf offset:0 atIndex:0];
             [enc setTexture:tmp atIndex:1];
             dispatch(enc, ph, MTLSizeMake(gOutW_, gRenderH_, 1), MTLSizeMake(16,16,1));
-            id<MTLBuffer> h = floatBuf({float(gOutH_)});
+            GpuBuffer h = floatBuf({float(gOutH_)});
             id<MTLComputePipelineState> pv = pipeline(lib_, pipes_, device_, "odl_upscale_v");
             [enc setComputePipelineState:pv];
-            [enc setTexture:tmp atIndex:0]; [enc setBuffer:h offset:0 atIndex:0];
+            [enc setTexture:tmp atIndex:0]; [enc setBuffer:h.buf offset:0 atIndex:0];
             [enc setTexture:gOutTex_ atIndex:1];
             dispatch(enc, pv, MTLSizeMake(gOutW_, gOutH_, 1), MTLSizeMake(16,16,1));
             [enc endEncoding];
@@ -697,7 +705,7 @@ private:
             dispatch1d(enc, p, tokens, 32);
         } else {
             // QKV GEMM first (published E4M3)
-            runGemm(enc, projIn_, tensorNamed("block" + b + ".layer1.qkv"), GpuBuffer(),
+            runGemm(enc, projIn_, tensorNamed("block" + b + ".layer1.qkv"), GpuBuffer{},
                     tokens, 3 * C, C, 0, qkvBuf_);
             id<MTLComputePipelineState> p = pipeline(lib_, pipes_, device_, "odl_window_attention");
             [enc setComputePipelineState:p];

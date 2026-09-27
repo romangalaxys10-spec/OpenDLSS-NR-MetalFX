@@ -84,7 +84,7 @@ struct E4M3 {
         return sign ? -v : v;
     }
 
-    static constexpr float min_subnormal() { return std::ldexp(1.0f, -9); } // 2^-9
+    static inline float min_subnormal() { return std::ldexp(1.0f, -9); } // 2^-9
 };
 
 // Quantize f32 onto the E4M3 grid and read it back as f32 (what "publication" means).

@@ -372,7 +372,7 @@ public:
             pcU(pc, 5, input.height);
             ok = uploadImage(input, src) &&
                  dispatch("odl_denoise", pc,
-                          { bindTex(0, src), bindBuf(0, dst) },
+                          { bindTex(0, src), bindTex(8, dst) },
                           divUp(input.width, 8), divUp(input.height, 8), 1);
             size_t off = 0;
             if (ok) ok = downloadImage(dst, off);
@@ -407,7 +407,7 @@ public:
                 pcU(pc, 4, input.width);            // C[1].x = srcW
                 pcU(pc, 5, input.height);           // C[1].y = srcH
                 pcU(pc, 6, input.height);           // C[1].z = dstH (unchanged rows)
-                ok = dispatch("odl_upscale_h", pc, { bindTex(0, src), bindBuf(0, tmp) },
+                ok = dispatch("odl_upscale_h", pc, { bindTex(0, src), bindTex(8, tmp) },
                               divUp(OW, 8), divUp(input.height, 8), 1);
             }
             if (ok) {   // 2. Lanczos3 vertical pass
@@ -416,7 +416,7 @@ public:
                 pcU(pc, 4, OW);                     // C[1].x = tmpW
                 pcU(pc, 5, input.height);           // C[1].y = tmpH
                 pcU(pc, 6, OW);                     // C[1].z = dstW
-                ok = dispatch("odl_upscale_v", pc, { bindTex(0, tmp), bindBuf(0, up) },
+                ok = dispatch("odl_upscale_v", pc, { bindTex(0, tmp), bindTex(8, up) },
                               divUp(OW, 8), divUp(OH, 8), 1);
             }
             const GpuTex* finalTex = &up;
@@ -425,7 +425,7 @@ public:
                 pcF(pc, 0, sharpen);
                 pcU(pc, 4, OW);
                 pcU(pc, 5, OH);
-                ok = dispatch("odl_sharpen", pc, { bindTex(0, up), bindBuf(0, fin) },
+                ok = dispatch("odl_sharpen", pc, { bindTex(0, up), bindTex(8, fin) },
                               divUp(OW, 8), divUp(OH, 8), 1);
                 finalTex = &fin;
             }
@@ -537,7 +537,7 @@ public:
                 const BlockScheduleEntry& p = entries[bi - 1];
                 const int32_t effE = e.onField ? -1 : int32_t(e.level);
                 const int32_t effP = p.onField ? -1 : int32_t(p.level);
-                GpuBuffer& other = (state == &stateA_) ? stateB : stateA;
+                GpuBuffer& other = (state == &stateA_) ? stateB_ : stateA_;
                 if (effE > effP) {
                     // encoder transition: 2x2 box pool -> C -> 2C up-GEMM
                     const std::string lvl = p.onField ? "trans_f" : "trans" + std::to_string(p.level);
@@ -607,10 +607,9 @@ public:
             std::vector<BindArg> args = {
                 bindBuf(0, *state),
                 bindBuf(1, *tensorPtr("head.w")),
-                bindBuf(2, headOutBuf(*state)),   // placeholder replaced below
             };
-            args[2] = bias ? bindBuf(2, *bias) : BindArg{ 2, nullptr, nullptr };
-            args.push_back(bindBuf(0, headBuf_));      // u0 (register 0 on the UAV side)
+            if (bias) args.push_back(bindBuf(2, *bias));
+            args.push_back(bindBuf(8, headBuf_));      // u0 (UAV table base + 0)
             if (!dispatch("odl_head", pc, args, divUp(tokens, 64), 1, 1)) {
                 abortFrame();
                 return false;
@@ -648,7 +647,7 @@ public:
                 // one thread per 16x16 block, numthreads(8,8)
                 const uint32_t bx = divUp(mv.width, 16), by = divUp(mv.height, 16);
                 ok = dispatch("odl_motion", pc,
-                              { bindTex(0, prev), bindTex(1, curr), bindBuf(4, mvTex) },
+                              { bindTex(0, prev), bindTex(1, curr), bindTex(12, mvTex) },
                               divUp(bx, 8), divUp(by, 8), 1);
             }
             size_t off = 0;
@@ -699,7 +698,7 @@ public:
                  (hasHistory ? uploadImage(historyColor, hist) : true) &&
                  dispatch("odl_reproject", pc,
                           { bindTex(0, *histPtr), bindTex(1, mvTex),
-                            bindBuf(2, rp), bindBuf(3, cf) },
+                            bindTex(8, rp), bindTex(9, cf) },
                           divUp(mv.width, 8), divUp(mv.height, 8), 1);
             size_t offRp = 0, offCf = 0;
             if (ok) ok = downloadImage(rp, offRp) && downloadImage(cf, offCf);
@@ -734,7 +733,7 @@ public:
             pcU(pc, 5, current.height);
             ok = uploadImage(current, cur) && uploadImage(reproj, rp) && uploadImage(confidence, cf) &&
                  dispatch("odl_temporal_blend", pc,
-                          { bindTex(0, cur), bindTex(1, rp), bindTex(2, cf), bindBuf(0, dst) },
+                          { bindTex(0, cur), bindTex(1, rp), bindTex(2, cf), bindTex(8, dst) },
                           divUp(current.width, 8), divUp(current.height, 8), 1);
             size_t off = 0;
             if (ok) ok = downloadImage(dst, off);
@@ -814,7 +813,7 @@ public:
                 ok = uploadImage(temporalHist, gHist_) && uploadImage(mvImg, gMv_) &&
                      dispatch("odl_reproject", pc,
                               { bindTex(0, gHist_), bindTex(1, gMv_),
-                                bindBuf(2, gRp_), bindBuf(3, gCf_) },
+                                bindTex(8, gRp_), bindTex(9, gCf_) },
                               divUp(gRenderW_, 8), divUp(gRenderH_, 8), 1);
                 if (ok) {
                     std::memset(pc, 0, sizeof(pc));
@@ -823,7 +822,7 @@ public:
                     pcU(pc, 5, gRenderH_);
                     ok = dispatch("odl_temporal_blend", pc,
                                   { bindTex(0, gColor_), bindTex(1, gRp_),
-                                    bindTex(2, gCf_), bindBuf(0, gBlend_) },
+                                    bindTex(2, gCf_), bindTex(8, gBlend_) },
                                   divUp(gRenderW_, 8), divUp(gRenderH_, 8), 1);
                 }
                 srcTex = &gBlend_;
@@ -834,7 +833,7 @@ public:
                 pcU(pc, 4, gRenderW_);
                 pcU(pc, 5, gRenderH_);
                 pcU(pc, 6, gRenderH_);
-                ok = dispatch("odl_upscale_h", pc, { bindTex(0, *srcTex), bindBuf(0, gTmp_) },
+                ok = dispatch("odl_upscale_h", pc, { bindTex(0, *srcTex), bindTex(8, gTmp_) },
                               divUp(gOutW_, 8), divUp(gRenderH_, 8), 1);
             }
             if (ok) {
@@ -843,7 +842,7 @@ public:
                 pcU(pc, 4, gOutW_);
                 pcU(pc, 5, gRenderH_);
                 pcU(pc, 6, gOutW_);
-                ok = dispatch("odl_upscale_v", pc, { bindTex(0, gTmp_), bindBuf(0, gOut_) },
+                ok = dispatch("odl_upscale_v", pc, { bindTex(0, gTmp_), bindTex(8, gOut_) },
                               divUp(gOutW_, 8), divUp(gOutH_, 8), 1);
             }
             size_t off = 0;
@@ -1045,14 +1044,8 @@ private:
                      unsigned long(hr));
             return false;
         }
-        DML_FEATURE_QUERY_FEATURE_LEVELS q{};
-        q.RequestedFeatureLevel = DML_FEATURE_LEVEL_2_0;
-        if (FAILED(dmlDevice_->CheckFeatureSupport(DML_FEATURE_FEATURE_LEVELS, &q, sizeof(q))) ||
-            q.SupportedFeatureLevel < DML_FEATURE_LEVEL_2_0) {
-            log_warn("d3d12: DML device lacks feature level 2_0 — GEMMs run in HLSL");
-            dmlDevice_.Reset();
-            return false;
-        }
+        // (feature-level support is already gated by DMLCreateDevice1's HRESULT
+        //  above: it fails when the device cannot provide the requested level)
         if (FAILED(dmlDevice_->CreateCommandRecorder(IID_PPV_ARGS(&dmlRecorder_)))) {
             dmlDevice_.Reset();
             return false;
@@ -1071,15 +1064,15 @@ private:
         a.DataType = DML_TENSOR_DATA_TYPE_FLOAT16;
         a.Sizes = aSizes; a.Strides = nullptr;             // row-major, dense
         a.TotalTensorSizeInBytes = uint64_t(tokens) * inCh * 2;
-        a.Flags = DML_TENSOR_FLAGS_NONE;
+        a.Flags = DML_TENSOR_FLAG_NONE;
         b.DataType = DML_TENSOR_DATA_TYPE_FLOAT16;
         b.Sizes = bSizes; b.Strides = nullptr;             // weights are [outCh][inCh]
         b.TotalTensorSizeInBytes = uint64_t(outCh) * inCh * 2;
-        b.Flags = DML_TENSOR_FLAGS_NONE;
+        b.Flags = DML_TENSOR_FLAG_NONE;
         o.DataType = DML_TENSOR_DATA_TYPE_FLOAT16;
         o.Sizes = oSizes; o.Strides = nullptr;
         o.TotalTensorSizeInBytes = uint64_t(tokens) * outCh * 2;
-        o.Flags = DML_TENSOR_FLAGS_NONE;
+        o.Flags = DML_TENSOR_FLAG_NONE;
         DML_TENSOR_DESC aD{ DML_TENSOR_TYPE_BUFFER, &a };
         DML_TENSOR_DESC bD{ DML_TENSOR_TYPE_BUFFER, &b };
         DML_TENSOR_DESC oD{ DML_TENSOR_TYPE_BUFFER, &o };
@@ -1097,7 +1090,8 @@ private:
 
         ComPtr<IDMLOperator> op;
         if (FAILED(dmlDevice_->CreateOperator(&opDesc, IID_PPV_ARGS(&op)))) return false;
-        if (FAILED(op->Compile(nullptr, 0, DML_EXECUTION_FLAG_NONE, IID_PPV_ARGS(&g.op)))) return false;
+        if (FAILED(dmlDevice_->CompileOperator(op.Get(), DML_EXECUTION_FLAG_NONE,
+                                               IID_PPV_ARGS(&g.op)))) return false;
 
         DML_BINDING_PROPERTIES props = g.op->GetBindingProperties();
         if (props.PersistentResourceSize &&
@@ -1128,11 +1122,13 @@ private:
         list_->SetDescriptorHeaps(1, csuHeap_.GetAddressOf());
         if (g.initTemp.valid()) {
             DML_BUFFER_BINDING tb{ g.initTemp.res.Get(), 0, g.initTemp.bytes };
-            table->BindTemporaryResource(&tb);
+            DML_BINDING_DESC db{ DML_BINDING_TYPE_BUFFER, &tb };
+            table->BindTemporaryResource(&db);
         }
         if (g.persistent.valid()) {
             DML_BUFFER_BINDING pb{ g.persistent.res.Get(), 0, g.persistent.bytes };
-            table->BindPersistentResource(&pb);
+            DML_BINDING_DESC db{ DML_BINDING_TYPE_BUFFER, &pb };
+            table->BindPersistentResource(&db);
         }
         dmlRecorder_->RecordDispatch(list_.Get(), init.Get(), table.Get());
         uavBarrier();
@@ -1168,16 +1164,25 @@ private:
         DML_BUFFER_BINDING ab{ x.res.Get(), 0, uint64_t(tokens) * inCh * 2 };
         DML_BUFFER_BINDING bb{ w.res.Get(), 0, uint64_t(outCh) * inCh * 2 };
         DML_BUFFER_BINDING ob{ out.res.Get(), 0, uint64_t(tokens) * outCh * 2 };
-        DML_BUFFER_BINDING ins[2] = { ab, bb };
-        table->BindInputs(2, ins);
-        table->BindOutputs(1, &ob);
+        DML_BUFFER_BINDING ab2{ x.res.Get(), 0, uint64_t(tokens) * inCh * 2 };
+        DML_BUFFER_BINDING bb2{ w.res.Get(), 0, uint64_t(outCh) * inCh * 2 };
+        DML_BUFFER_BINDING ob2{ out.res.Get(), 0, uint64_t(tokens) * outCh * 2 };
+        DML_BINDING_DESC inDescs[2] = {
+            DML_BINDING_DESC{ DML_BINDING_TYPE_BUFFER, &ab2 },
+            DML_BINDING_DESC{ DML_BINDING_TYPE_BUFFER, &bb2 },
+        };
+        DML_BINDING_DESC outDesc{ DML_BINDING_TYPE_BUFFER, &ob2 };
+        table->BindInputs(2, inDescs);
+        table->BindOutputs(1, &outDesc);
         if (g.temporary.valid()) {
             DML_BUFFER_BINDING tb{ g.temporary.res.Get(), 0, g.temporary.bytes };
-            table->BindTemporaryResource(&tb);
+            DML_BINDING_DESC db{ DML_BINDING_TYPE_BUFFER, &tb };
+            table->BindTemporaryResource(&db);
         }
         if (g.persistent.valid()) {
             DML_BUFFER_BINDING pb{ g.persistent.res.Get(), 0, g.persistent.bytes };
-            table->BindPersistentResource(&pb);
+            DML_BINDING_DESC db{ DML_BINDING_TYPE_BUFFER, &pb };
+            table->BindPersistentResource(&db);
         }
         dmlRecorder_->RecordDispatch(list_.Get(), g.op.Get(), table.Get());
         uavBarrier();
@@ -1713,7 +1718,7 @@ private:
         pcU(pc, 0, fw * fh);                       // P[0].x = tokens
         pcU(pc, 1, C);                             // P[0].y = C
         return dispatch("odl_input_embed", pc,
-                        { bindBuf(4, featBuf_), bindBuf(5, *proj), bindBuf(1, state) },
+                        { bindBuf(4, featBuf_), bindBuf(5, *proj), bindBuf(9, state) },
                         divUp(fw * fh, 64), 1, 1);
     }
 
@@ -1722,7 +1727,7 @@ private:
         uint32_t pc[kRootConstWords] = {};
         pcU(pc, 0, sw); pcU(pc, 1, sh); pcU(pc, 2, dw); pcU(pc, 3, dh);  // P[0]
         pcU(pc, 4, C);                                                   // P[1].x
-        return dispatch("odl_pool2x2", pc, { bindBuf(0, src), bindBuf(0, dst) },
+        return dispatch("odl_pool2x2", pc, { bindBuf(0, src), bindBuf(8, dst) },
                         divUp(dw * dh, 64), 1, 1);
     }
 
@@ -1745,7 +1750,7 @@ private:
                 pcU(pc, 3, 0);                             // pubMode (unused in mode 2)
                 pcU(pc, 4, 0);                             // hasBias
                 pcU(pc, 5, 2);                             // mode 2 = publish
-                return dispatch("odl_channel_gemm", pc, { bindBuf(0, out) },
+                return dispatch("odl_channel_gemm", pc, { bindBuf(0, out), bindBuf(8, out) },
                                 divUp(tokens * (outCh / 2), 64), 1, 1);
             }
             log_warn("d3d12: DML GEMM %s failed — falling back to HLSL", wName.c_str());
@@ -1760,7 +1765,7 @@ private:
         pcU(pc, 5, 0);                                     // P[1].y = mode 0 (GEMM)
         std::vector<BindArg> args = { bindBuf(0, x), bindBuf(1, *w) };
         if (bias) args.push_back(bindBuf(2, *bias));
-        args.push_back(bindBuf(0, out));                   // u0
+        args.push_back(bindBuf(8, out));                   // u0
         return dispatch("odl_channel_gemm", pc, args,
                         divUp(tokens * (outCh / 2), 64), 1, 1);
     }
@@ -1770,7 +1775,7 @@ private:
         uint32_t pc[kRootConstWords] = {};
         pcU(pc, 0, sw); pcU(pc, 1, sh); pcU(pc, 2, dw); pcU(pc, 3, dh);
         pcU(pc, 4, C);
-        return dispatch("odl_nearest_upsample2x", pc, { bindBuf(0, src), bindBuf(0, dst) },
+        return dispatch("odl_nearest_upsample2x", pc, { bindBuf(0, src), bindBuf(8, dst) },
                         divUp(dw * dh * (C / 2), 64), 1, 1);
     }
 
@@ -1787,7 +1792,7 @@ private:
         if (hasSkip && skip.valid()) args.push_back(bindBuf(1, skip));
         if (scale) args.push_back(bindBuf(2, *scale));
         if (inScale) args.push_back(bindBuf(3, *inScale));
-        args.push_back(bindBuf(0, out));
+        args.push_back(bindBuf(8, out));                   // u0
         return dispatch("odl_decoder_skip", pc, args,
                         divUp(tokens * (C / 2), 64), 1, 1);
     }
@@ -1834,7 +1839,7 @@ private:
             if (b2) args.push_back(bindBuf(4, *b2));
             if (w3) args.push_back(bindBuf(5, *w3));
             if (b3) args.push_back(bindBuf(6, *b3));
-            args.push_back(bindBuf(0, ffnOut_));   // u0
+            args.push_back(bindBuf(8, ffnOut_));   // u0
             if (!dispatch("odl_ffn", pc, args, tokens, 1, 1)) return false;
         }
 
@@ -1850,7 +1855,7 @@ private:
                 bindBuf(0, state), bindBuf(1, ffnOut_),
             };
             if (s) args.push_back(bindBuf(2, *s));
-            args.push_back(bindBuf(0, projIn_));   // u0
+            args.push_back(bindBuf(8, projIn_));   // u0
             if (!dispatch("odl_block_skip", pc, args, divUp(tokens * (C / 2), 64), 1, 1))
                 return false;
         }
@@ -1882,7 +1887,7 @@ private:
                 pcU(pc, 4, 0);
                 pcU(pc, 5, 0);
                 if (!dispatch("odl_channel_gemm", pc,
-                              { bindBuf(0, projIn_), bindBuf(1, *qkvT), bindBuf(0, qkvBuf_) },
+                              { bindBuf(0, projIn_), bindBuf(1, *qkvT), bindBuf(8, qkvBuf_) },
                               divUp(padded * (3 * C / 2), 64), 1, 1))
                     return false;
             }
@@ -1893,7 +1898,7 @@ private:
             pcU(pc, 4, qscale ? 1u : 0u);          // P[1].x = hasQscale
             std::vector<BindArg> args = { bindBuf(0, qkvBuf_) };
             if (qscale) args.push_back(bindBuf(1, *qscale));
-            args.push_back(bindBuf(0, attnOut_));  // u0
+            args.push_back(bindBuf(8, attnOut_));  // u0
             if (!dispatch("odl_global_attention", pc, args, divUp(tokens, 64), 1, 1))
                 return false;
         } else {
@@ -1909,7 +1914,7 @@ private:
                 pcU(pc, 4, 0);
                 pcU(pc, 5, 0);
                 if (!dispatch("odl_channel_gemm", pc,
-                              { bindBuf(0, projIn_), bindBuf(1, *qkvT), bindBuf(0, qkvBuf_) },
+                              { bindBuf(0, projIn_), bindBuf(1, *qkvT), bindBuf(8, qkvBuf_) },
                               divUp(tokens * (3 * C / 2), 64), 1, 1))
                     return false;
             }
@@ -1925,7 +1930,7 @@ private:
             std::vector<BindArg> args = { bindBuf(0, qkvBuf_) };
             if (prior) args.push_back(bindBuf(1, *prior));
             if (qscale) args.push_back(bindBuf(2, *qscale));
-            args.push_back(bindBuf(0, attnOut_));  // u0
+            args.push_back(bindBuf(8, attnOut_));  // u0
             const uint32_t shift = (e.windowPhase == 0) ? 0u : 4u;
             const uint32_t gridX = (e.levelWidth + shift + 7u) / 8u;
             const uint32_t gridY = (e.levelHeight + shift + 7u) / 8u;
@@ -1946,7 +1951,7 @@ private:
             pcU(pc, 4, 0);
             pcU(pc, 5, 0);
             if (!dispatch("odl_channel_gemm", pc,
-                          { bindBuf(0, attnOut_), bindBuf(1, *projT), bindBuf(0, projOut_) },
+                          { bindBuf(0, attnOut_), bindBuf(1, *projT), bindBuf(8, projOut_) },
                           divUp(tokens * (C / 2), 64), 1, 1))
                 return false;
         }
@@ -1960,7 +1965,7 @@ private:
                 bindBuf(0, projIn_), bindBuf(1, projOut_),
             };
             if (s) args.push_back(bindBuf(2, *s));
-            args.push_back(bindBuf(0, state));     // u0
+            args.push_back(bindBuf(8, state));     // u0
             if (!dispatch("odl_block_epilogue", pc, args, divUp(tokens * (C / 2), 64), 1, 1))
                 return false;
         }
