@@ -30,6 +30,8 @@ jobs:
           ctest --test-dir build-core --output-on-failure
         env:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
+      - name: Configure (full)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build Metal backend
         run: cmake --build build -j 3
       - name: Metal backend report
