@@ -73,7 +73,7 @@ jobs:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
       - name: Backend report
         shell: pwsh
-        run: & .\build\opendlss-nr.exe info
+        run: Invoke-Expression "& .\build\opendlss-nr.exe info"
 
   linux-asan:
     name: Linux AddressSanitizer
