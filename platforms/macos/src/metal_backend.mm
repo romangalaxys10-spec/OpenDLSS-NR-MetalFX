@@ -127,12 +127,7 @@ public:
         if (fx) {
             fx.colorTexture = src;
             fx.outputTexture = up;
-            NSError* fxErr = nil;
-            if (![fx encodeTransformToCommandBuffer:cb error:&fxErr]) {
-                log_error("metalfx: transform encode failed: %s",
-                          fxErr.localizedDescription.UTF8String ?: "unknown");
-            }
-            [fx encodeColorToCommandBuffer:cb];
+            [fx encodeToCommandBuffer:cb];
             [enc endEncoding];
             [cb commit]; [cb waitUntilCompleted];
             cb = [queue_ commandBuffer];
@@ -389,13 +384,8 @@ public:
                 d.colorTextureFormat = MTLPixelFormatRGBA16Float;
                 d.depthTextureFormat = MTLPixelFormatR32Float;
                 d.motionTextureFormat = MTLPixelFormatRG16Float;
+                d.autoExposureEnabled = NO;   // we hand the scaler pre-exposure
                 tScaler_ = [d newTemporalScalerWithDevice:device_];
-                if (tScaler_) {
-                    if ([tScaler_ respondsToSelector:@selector(setIsAutoExposureEnabled:)])
-                        [tScaler_ setIsAutoExposureEnabled:NO];
-                    if ([tScaler_ respondsToSelector:@selector(setSupportsFeedback:)])
-                        [tScaler_ setSupportsFeedback:YES];
-                }
             }
         }
         gColorTex_ = newTextureHalf(renderW, renderH);
@@ -430,8 +420,7 @@ public:
             tScaler_.depthTexture = gDepthTex_;
             tScaler_.motionTexture = gMotionTex_;
             if (!tScaler_.outputTexture) tScaler_.outputTexture = gOutTex_;
-            if ([tScaler_ respondsToSelector:@selector(setExposureFactor:)])
-                [tScaler_ setExposureFactor:(in.exposure > 0 ? in.exposure : 1.0f)];
+            tScaler_.preExposure = in.exposure > 0 ? in.exposure : 1.0f;
             tScaler_.reset = in.resetHistory ? YES : NO;
             [tScaler_ encodeToCommandBuffer:cb];
         } else {

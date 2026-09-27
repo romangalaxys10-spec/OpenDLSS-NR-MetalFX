@@ -72,7 +72,8 @@ jobs:
         env:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
       - name: Backend report
-        run: build\opendlss-nr.exe info
+        shell: pwsh
+        run: & .\build\opendlss-nr.exe info
 
   linux-asan:
     name: Linux AddressSanitizer
