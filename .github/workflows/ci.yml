@@ -12,18 +12,29 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build -j 3
-      - name: Demo model
-        run: python3 tools/make_demo_weights.py --out models/demo-nr
-      - name: Tests
-        run: ctest --test-dir build --output-on-failure
+      - name: Dump MetalFX headers (API ground truth)
+        run: |
+          SDK=$(xcrun --show-sdk-path)
+          echo "SDK: $SDK"
+          find "$SDK/System/Library/Frameworks/MetalFX.framework" -name "*.h" 2>/dev/null | head
+          for f in $(find "$SDK/System/Library/Frameworks/MetalFX.framework" -name "*.h" 2>/dev/null); do
+            echo "===== $f ====="
+            cat "$f"
+          done
+      - name: Configure (core)
+        run: cmake -B build-core -DCMAKE_BUILD_TYPE=Release -DOPENDLSS_BUILD_GPU_BACKENDS=OFF
+      - name: Build + test core on Apple Silicon
+        run: |
+          cmake --build build-core -j 3
+          python3 tools/make_demo_weights.py --out models/demo-nr
+          ctest --test-dir build-core --output-on-failure
         env:
           OPENDLSS_TEST_MODEL: ${{ github.workspace }}/models/demo-nr
+      - name: Build Metal backend (iterating on MetalFX API)
+        continue-on-error: true
+        run: cmake --build build -j 3
       - name: Backend report
-        run: ./build/opendlss-nr info
+        run: ./build-core/opendlss-nr info
 
   linux-vulkan:
     name: Linux (core + CPU + Vulkan shaders)

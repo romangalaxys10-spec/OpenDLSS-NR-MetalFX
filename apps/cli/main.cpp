@@ -22,6 +22,7 @@
 #include <vector>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 
 using namespace opendlss;
 

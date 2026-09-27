@@ -123,7 +123,7 @@ public:
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
 
         // 1. MetalFX spatial scaler when available, else our Lanczos3 passes
-        MTLFXSpatialScaler* fx = spatialScaler(input.width, input.height, OW, OH);
+        id<MTLFXSpatialScaler> fx = spatialScaler(input.width, input.height, OW, OH);
         if (fx) {
             fx.colorTexture = src;
             fx.outputTexture = up;
@@ -571,7 +571,7 @@ private:
         [enc setBytes:&v length:4 atIndex:idx];
     }
 
-    MTLFXSpatialScaler* spatialScaler(uint32_t iw, uint32_t ih, uint32_t ow, uint32_t oh) {
+    id<MTLFXSpatialScaler> spatialScaler(uint32_t iw, uint32_t ih, uint32_t ow, uint32_t oh) {
         if (!info_.metalFxSpatial) return nil;
         const std::string key = std::to_string(iw)+"x"+std::to_string(ih)+"->"+std::to_string(ow)+"x"+std::to_string(oh);
         auto it = spatialScalers_.find(key);
@@ -581,7 +581,7 @@ private:
             d.inputWidth = iw; d.inputHeight = ih; d.outputWidth = ow; d.outputHeight = oh;
             d.colorTextureFormat = MTLPixelFormatRGBA16Float;
             d.outputTextureFormat = MTLPixelFormatRGBA16Float;
-            MTLFXSpatialScaler* s = [d newSpatialScalerWithDevice:device_];
+            id<MTLFXSpatialScaler> s = [d newSpatialScalerWithDevice:device_];
             spatialScalers_[key] = s;
             return s;
         }
@@ -748,8 +748,8 @@ private:
     id<MTLCommandQueue> queue_ = nil;
     id<MTLLibrary> lib_ = nil;
     std::map<std::string, id<MTLComputePipelineState>> pipes_;
-    std::map<std::string, MTLFXSpatialScaler*> spatialScalers_;
-    MTLFXTemporalScaler* tScaler_ = nil;
+    std::map<std::string, id<MTLFXSpatialScaler>> spatialScalers_;
+    id<MTLFXTemporalScaler> tScaler_ = nil;
     std::unique_ptr<Model> model_;
     std::map<std::string, GpuBuffer> tensorBufs_;
     GpuBuffer projIn_, qkvBuf_;
